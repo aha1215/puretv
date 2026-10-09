@@ -67,16 +67,16 @@ fun TvBrowseScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(c.surface)
-            .padding(32.dp),
-        verticalArrangement = Arrangement.spacedBy(28.dp),
+            .padding(28.dp),
+        verticalArrangement = Arrangement.spacedBy(20.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(20.dp)) {
             TvExpressiveIconButton(
                 icon = ExpressiveIcons.Back,
                 contentDescription = "Back",
                 onClick = onBack,
-                boxSize = 56.dp,
-                iconSize = 26.dp,
+                boxSize = 48.dp,
+                iconSize = 22.dp,
             )
             TvPageTitle("Browse")
         }
@@ -99,10 +99,10 @@ fun TvBrowseScreen(
                 )
 
             else -> LazyVerticalGrid(
-                columns = GridCells.Adaptive(minSize = 200.dp),
-                horizontalArrangement = Arrangement.spacedBy(24.dp),
-                verticalArrangement = Arrangement.spacedBy(24.dp),
-                contentPadding = PaddingValues(top = 4.dp, bottom = 40.dp),
+                columns = GridCells.Adaptive(minSize = 216.dp),
+                horizontalArrangement = Arrangement.spacedBy(18.dp),
+                verticalArrangement = Arrangement.spacedBy(18.dp),
+                contentPadding = PaddingValues(top = 4.dp, bottom = 28.dp),
             ) {
                 items(state.games, key = { it.id }) { game ->
                     // Clicking a category opens its live-streams grid (TvCategoryScreen),

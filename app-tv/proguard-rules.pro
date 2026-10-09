@@ -37,6 +37,11 @@
 -dontwarn okhttp3.**
 -dontwarn okio.**
 
+# Ktor's optional IntelliJ debugger detector references JVM management APIs
+# that are absent on Android. They are only used by its desktop debug path.
+-dontwarn java.lang.management.ManagementFactory
+-dontwarn java.lang.management.RuntimeMXBean
+
 # Keep our own model/DTO classes (reflection-free, but names matter for serialization)
 -keep class com.puretv.twitch.core.model.** { *; }
 -keep class com.puretv.twitch.core.api.** { *; }

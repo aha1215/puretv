@@ -1,6 +1,7 @@
 package com.puretv.twitch.core.repository
 
 import com.puretv.twitch.core.api.TwitchApiClient
+import com.puretv.twitch.core.api.FollowedChannel
 import com.puretv.twitch.core.model.ChannelInfo
 import com.puretv.twitch.core.model.GameInfo
 import com.puretv.twitch.core.model.StreamInfo
@@ -92,10 +93,18 @@ class ChannelRepository(private val apiClient: TwitchApiClient) {
 class UserRepository(private val apiClient: TwitchApiClient) {
     private val _followedLogins = MutableStateFlow<List<String>>(emptyList())
     val followedLogins: StateFlow<List<String>> = _followedLogins.asStateFlow()
+    private val _followedChannels = MutableStateFlow<List<FollowedChannel>>(emptyList())
+    val followedChannels: StateFlow<List<FollowedChannel>> = _followedChannels.asStateFlow()
 
     suspend fun loadFollows(userId: String) {
         val follows = apiClient.getAllFollowedChannels(userId)
+        _followedChannels.value = follows
         _followedLogins.value = follows.map { it.broadcaster_login }
+    }
+
+    fun clearFollows() {
+        _followedChannels.value = emptyList()
+        _followedLogins.value = emptyList()
     }
 
     /**

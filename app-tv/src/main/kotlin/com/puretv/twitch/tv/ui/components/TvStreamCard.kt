@@ -51,8 +51,8 @@ fun TvStreamCard(stream: StreamInfo, onClick: () -> Unit, modifier: Modifier = M
 
     Column(
         modifier = modifier
-            .padding(6.dp)
-            .width(220.dp)
+            .padding(4.dp)
+            .width(200.dp)
             .tvFocusClickable(
                 interaction = interaction,
                 onClick = onClick,
@@ -61,7 +61,7 @@ fun TvStreamCard(stream: StreamInfo, onClick: () -> Unit, modifier: Modifier = M
                 color = c.surfaceContainer,
                 focusColor = c.surfaceHigh,
             )
-            .padding(12.dp),
+            .padding(10.dp),
     ) {
         // Live preview thumbnail. Twitch serves a {width}x{height} template we
         // substitute; a coloured plate shows through until the image loads.
@@ -102,7 +102,7 @@ fun TvStreamCard(stream: StreamInfo, onClick: () -> Unit, modifier: Modifier = M
             Text(
                 text = stream.gameName.ifBlank { "Live" },
                 style = MaterialTheme.typography.bodyMedium,
-                color = c.primary,
+                color = c.onSurfaceVariant,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )

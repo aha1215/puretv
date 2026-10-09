@@ -14,9 +14,13 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.MaterialTheme
@@ -54,35 +58,44 @@ fun TvControlsOverlay(
     currentQuality: StreamQuality,
     adBlockStatus: AdBlockStatus,
     onBack: () -> Unit,
+    onOpenChannel: () -> Unit,
     onTogglePlayPause: () -> Unit,
     onSelectQuality: (StreamQuality) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val c = PureTvTvTheme.colors
     val shapes = PureTvTvTheme.shapes
+    val channelFocus = remember { FocusRequester() }
+
+    LaunchedEffect(visible) {
+        if (visible) {
+            androidx.compose.runtime.withFrameNanos { }
+            runCatching { channelFocus.requestFocus() }
+        }
+    }
 
     AnimatedVisibility(visible = visible, enter = fadeIn(), exit = fadeOut(), modifier = modifier) {
-        Box(modifier = Modifier.fillMaxSize().padding(32.dp)) {
+        Box(modifier = Modifier.fillMaxSize().padding(24.dp)) {
             // Header: back, title/viewer-count. heightIn (not height) because a long
             // stream title must be free to wrap without pushing the pill out of the bar.
             Row(
                 modifier = Modifier
                     .align(Alignment.TopCenter)
                     .fillMaxWidth()
-                    .heightIn(min = 88.dp)
+                    .heightIn(min = 60.dp)
                     .clip(shapes.paneShape)
                     .background(c.surfaceContainer)
-                    .padding(horizontal = 24.dp, vertical = 16.dp),
+                    .padding(horizontal = 18.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(20.dp),
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
             ) {
                 TvExpressiveIconButton(
                     icon = ExpressiveIcons.Back,
                     contentDescription = "Back",
                     onClick = onBack,
                     style = TvButtonStyle.Tonal,
-                    boxSize = 56.dp,
-                    iconSize = 26.dp,
+                    boxSize = 48.dp,
+                    iconSize = 22.dp,
                 )
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
@@ -98,6 +111,13 @@ fun TvControlsOverlay(
                         color = c.onSurfaceVariant,
                     )
                 }
+                TvExpressiveButton(
+                    text = "Channel & VODs",
+                    onClick = onOpenChannel,
+                    style = TvButtonStyle.Tonal,
+                    size = TvButtonSize.Medium,
+                    modifier = Modifier.focusRequester(channelFocus),
+                )
                 // A standing fact about the app (mirrors TvShieldPill's own intent),
                 // so it stays up for the whole time the chrome is visible rather than
                 // fading after 3s like the toast below — the two answer different
@@ -106,37 +126,32 @@ fun TvControlsOverlay(
             }
 
             // Footer: transport controls + quality.
-            Column(
+            Row(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
                     .clip(shapes.paneShape)
                     .background(c.surfaceContainer)
-                    .padding(24.dp),
-                verticalArrangement = Arrangement.spacedBy(20.dp),
+                    .padding(18.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    TvExpressiveIconButton(
-                        icon = if (isPlaying) ExpressiveIcons.Pause else ExpressiveIcons.Play,
-                        contentDescription = if (isPlaying) "Pause" else "Play",
-                        onClick = onTogglePlayPause,
-                        style = TvButtonStyle.Filled,
-                        boxSize = 72.dp,
-                        iconSize = 34.dp,
+                TvExpressiveIconButton(
+                    icon = if (isPlaying) ExpressiveIcons.Pause else ExpressiveIcons.Play,
+                    contentDescription = if (isPlaying) "Pause" else "Play",
+                    onClick = onTogglePlayPause,
+                    style = TvButtonStyle.Filled,
+                    boxSize = 56.dp,
+                    iconSize = 26.dp,
+                )
+                // Same order stepQuality() in TvStreamScreen walks via FF/RW, so the
+                // row the viewer sees always agrees with what those keys do.
+                StreamQuality.entries.sortedBy { it.sortOrder }.forEach { quality ->
+                    TvFilterChip(
+                        label = quality.label,
+                        selected = quality == currentQuality,
+                        onClick = { onSelectQuality(quality) },
                     )
-                    TvLivePill()
-                    Spacer(modifier = Modifier.weight(1f))
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    // Same order stepQuality() in TvStreamScreen walks via FF/RW, so the
-                    // row the viewer sees always agrees with what those keys do.
-                    StreamQuality.entries.sortedBy { it.sortOrder }.forEach { quality ->
-                        TvFilterChip(
-                            label = quality.label,
-                            selected = quality == currentQuality,
-                            onClick = { onSelectQuality(quality) },
-                        )
-                    }
                 }
             }
         }

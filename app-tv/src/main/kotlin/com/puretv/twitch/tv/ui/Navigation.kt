@@ -1,5 +1,6 @@
 package com.puretv.twitch.tv.ui
 
+import android.net.Uri
 import androidx.compose.runtime.Composable
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
@@ -14,6 +15,8 @@ import com.puretv.twitch.tv.ui.screens.TvLoginScreen
 import com.puretv.twitch.tv.ui.screens.TvSearchScreen
 import com.puretv.twitch.tv.ui.screens.TvSettingsScreen
 import com.puretv.twitch.tv.ui.screens.TvStreamScreen
+import com.puretv.twitch.tv.ui.screens.TvVodListScreen
+import com.puretv.twitch.tv.ui.screens.TvVodPlayerScreen
 
 /**
  * SECTION 07.2 — TV route table. Mirrors the phone app's [Routes] one-for-one
@@ -42,10 +45,15 @@ object Routes {
     const val STREAM = "stream/{channelLogin}"
     const val CHANNEL = "channel/{channelLogin}"
     const val CATEGORY = "category/{gameId}"
+    const val VODS = "vods/{channelLogin}"
+    const val VOD_PLAYER = "vod/{channelLogin}/{vodId}?title={title}&thumbnailUrl={thumbnailUrl}&durationSeconds={durationSeconds}"
 
     fun stream(channelLogin: String) = "stream/$channelLogin"
     fun channel(channelLogin: String) = "channel/$channelLogin"
     fun category(gameId: String) = "category/$gameId"
+    fun vods(channelLogin: String) = "vods/$channelLogin"
+    fun vod(channelLogin: String, vodId: String, title: String, thumbnailUrl: String, durationSeconds: Long) =
+        "vod/$channelLogin/$vodId?title=${Uri.encode(title)}&thumbnailUrl=${Uri.encode(thumbnailUrl)}&durationSeconds=$durationSeconds"
 }
 
 @Composable
@@ -55,6 +63,10 @@ fun PureTvTvNavHost(navController: NavHostController = rememberNavController()) 
             TvHomeScreen(
                 onOpenStream = { navController.navigate(Routes.stream(it)) },
                 onOpenChannel = { navController.navigate(Routes.channel(it)) },
+                onOpenVod = { vod -> navController.navigate(Routes.vod(vod.channelLogin, vod.id, vod.title, vod.thumbnailUrl, vod.durationSeconds)) },
+                onOpenLatestVod = { vod ->
+                    navController.navigate(Routes.vod(vod.userLogin, vod.id, vod.title, vod.thumbnailUrl, vod.durationSeconds))
+                },
                 onOpenFollowing = { navController.navigate(Routes.FOLLOWING) },
                 onOpenBrowse = { navController.navigate(Routes.BROWSE) },
                 onOpenSearch = { navController.navigate(Routes.SEARCH) },
@@ -97,13 +109,36 @@ fun PureTvTvNavHost(navController: NavHostController = rememberNavController()) 
         }
         composable(Routes.STREAM) { backStackEntry ->
             val channelLogin = backStackEntry.arguments?.getString("channelLogin").orEmpty()
-            TvStreamScreen(channelLogin = channelLogin, onBack = navController::popBackStack)
+            TvStreamScreen(
+                channelLogin = channelLogin,
+                onBack = navController::popBackStack,
+                onOpenChannel = { navController.navigate(Routes.channel(it)) },
+            )
         }
         composable(Routes.CHANNEL) { backStackEntry ->
             val channelLogin = backStackEntry.arguments?.getString("channelLogin").orEmpty()
             TvChannelScreen(
                 channelLogin = channelLogin,
                 onWatch = { navController.navigate(Routes.stream(channelLogin)) },
+                onOpenVods = { navController.navigate(Routes.vods(channelLogin)) },
+                onBack = navController::popBackStack,
+            )
+        }
+        composable(Routes.VODS) { entry ->
+            val channelLogin = entry.arguments?.getString("channelLogin").orEmpty()
+            TvVodListScreen(
+                channelLogin = channelLogin,
+                onOpenVod = { video -> navController.navigate(Routes.vod(channelLogin, video.id, video.title, video.thumbnailUrl, video.durationSeconds)) },
+                onBack = navController::popBackStack,
+            )
+        }
+        composable(Routes.VOD_PLAYER) { entry ->
+            TvVodPlayerScreen(
+                channelLogin = entry.arguments?.getString("channelLogin").orEmpty(),
+                vodId = entry.arguments?.getString("vodId").orEmpty(),
+                title = entry.arguments?.getString("title").orEmpty(),
+                thumbnailUrl = entry.arguments?.getString("thumbnailUrl").orEmpty(),
+                durationSeconds = entry.arguments?.getString("durationSeconds")?.toLongOrNull() ?: 0L,
                 onBack = navController::popBackStack,
             )
         }

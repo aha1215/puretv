@@ -64,6 +64,7 @@ import org.koin.core.parameter.parametersOf
 fun TvChannelScreen(
     channelLogin: String,
     onWatch: () -> Unit,
+    onOpenVods: () -> Unit,
     onBack: () -> Unit,
     viewModel: ChannelViewModel = koinViewModel(parameters = { parametersOf(channelLogin) }),
 ) {
@@ -86,7 +87,7 @@ fun TvChannelScreen(
             .background(c.surface)
             .verticalScroll(rememberScrollState()),
     ) {
-        Box(modifier = Modifier.fillMaxWidth().heightIn(min = 280.dp)) {
+        Box(modifier = Modifier.fillMaxWidth().heightIn(min = 200.dp)) {
             if (!bannerUrl.isNullOrBlank()) {
                 AsyncImage(
                     model = bannerUrl,
@@ -108,20 +109,27 @@ fun TvChannelScreen(
                 icon = ExpressiveIcons.Back,
                 contentDescription = "Back",
                 onClick = onBack,
-                modifier = Modifier.align(Alignment.TopStart).padding(32.dp),
+                modifier = Modifier.align(Alignment.TopStart).padding(24.dp),
             )
         }
 
-        Column(modifier = Modifier.padding(horizontal = 48.dp), verticalArrangement = Arrangement.spacedBy(28.dp)) {
+        Column(modifier = Modifier.padding(horizontal = 32.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
             IdentityRow(displayName = displayName, channel = channel, isLive = state.isLive, viewerCount = state.viewerCount)
 
             TvExpressiveButton(
                 text = "Watch now",
                 onClick = onWatch,
                 style = TvButtonStyle.Filled,
-                size = TvButtonSize.XLarge,
+                size = TvButtonSize.Large,
                 icon = ExpressiveIcons.Play,
                 modifier = Modifier.focusRequester(watchFocusRequester),
+            )
+
+            TvExpressiveButton(
+                text = "Past videos",
+                onClick = onOpenVods,
+                style = TvButtonStyle.Outlined,
+                size = TvButtonSize.Medium,
             )
 
             if (!channel?.description.isNullOrBlank()) {

@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "PureTV Twitch VOD Resume Sync",
+  "version": "1.0.4",
+  "description": "Syncs Twitch VOD playback positions between your browser and a paired PureTV Android TV device.",
+  "permissions": ["storage"],
+  "optional_permissions": ["cookies"],
+  "optional_host_permissions": ["http://*/*"],
+  "host_permissions": [
+    "https://www.twitch.tv/*",
+    "https://twitch.tv/*",
+    "https://m.twitch.tv/*"
+  ],
+  "background": {
+    "scripts": ["service-worker.js"],
+    "service_worker": "service-worker.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.twitch.tv/*",
+        "https://twitch.tv/*",
+        "https://m.twitch.tv/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "PureTV VOD sync",
+    "default_popup": "popup.html"
+  }
+}

@@ -6,6 +6,8 @@ import com.puretv.twitch.core.di.TokenHolder
 import com.puretv.twitch.core.follows.FollowedChannelsService
 import com.puretv.twitch.core.follows.FollowedChannelsSource
 import com.puretv.twitch.tv.data.AppSettingsStore
+import com.puretv.twitch.tv.data.BrowserVodSyncServer
+import com.puretv.twitch.tv.data.ChatslatorTranslationClient
 import com.puretv.twitch.tv.data.SecureTokenStore
 import com.puretv.twitch.tv.data.TokenRefresher
 import com.puretv.twitch.tv.data.db.PureTvTvDatabase
@@ -20,6 +22,8 @@ import com.puretv.twitch.tv.ui.SearchViewModel
 import com.puretv.twitch.tv.ui.SettingsViewModel
 import com.puretv.twitch.tv.ui.StreamViewModel
 import com.puretv.twitch.tv.ui.TvFollowingViewModel
+import com.puretv.twitch.tv.ui.TvVodListViewModel
+import com.puretv.twitch.tv.ui.TvVodPlayerViewModel
 import io.ktor.client.engine.HttpClientEngine
 import io.ktor.client.engine.okhttp.OkHttp
 import org.koin.androidx.viewmodel.dsl.viewModel
@@ -55,6 +59,8 @@ val tvModule = module {
 
     single { SecureTokenStore(get()) }
     single { AppSettingsStore(get(), get(), get<TokenHolder>()) }
+    single { BrowserVodSyncServer(get()) }
+    single { ChatslatorTranslationClient(get()) }
     // Launch-time access-token refresh + identity backfill (fail-soft).
     single { TokenRefresher(get(), get(), get()) }
     // Followed-rail data for the Following destination: real Twitch follows
@@ -74,10 +80,10 @@ val tvModule = module {
     single { TvPlayer(get(), get(), get()) }
 
     // --- ViewModels --------------------------------------------------------
-    // HomeViewModel(streamRepo, userRepo, settings, cachedStreamDao, tokenRefresher):
+    // HomeViewModel(streamRepo, userRepo, settings, vodRepo, cachedStreamDao, tokenRefresher):
     // the last two power cached-first paint/write-through + the on-failure token
     // refresh so "Live Now" survives token expiry and repopulates on refresh.
-    viewModel { HomeViewModel(get(), get(), get(), get(), get()) }
+    viewModel { HomeViewModel(get(), get(), get(), get(), get(), get()) }
     // TvFollowingViewModel(followedChannelsSource, settings): the Following
     // destination's own nav-rail screen, see TvFollowingScreen.
     viewModel { TvFollowingViewModel(get(), get()) }
@@ -86,8 +92,12 @@ val tvModule = module {
     viewModel { BrowseViewModel(get(), get()) }
     viewModel { (gameId: String) -> CategoryViewModel(gameId, get()) }
     viewModel { SearchViewModel(get()) }
-    viewModel { (channelLogin: String) -> StreamViewModel(channelLogin, get(), get(), get(), get(), get(), get()) }
+    viewModel { (channelLogin: String) -> StreamViewModel(channelLogin, get(), get(), get(), get(), get(), get(), get()) }
     viewModel { (channelLogin: String) -> ChannelViewModel(channelLogin, get(), get()) }
+    viewModel { (channelLogin: String) -> TvVodListViewModel(channelLogin, get(), get()) }
+    viewModel { (channelLogin: String, vodId: String, title: String, thumbnailUrl: String, durationSeconds: Long) ->
+        TvVodPlayerViewModel(channelLogin, vodId, title, thumbnailUrl, durationSeconds, get(), get(), get(), get(), get(), get(), get())
+    }
     viewModel { SettingsViewModel(get()) }
     // Device Code Grant flow: (httpClient, settingsStore, userRepository).
     viewModel { LoginViewModel(get(), get(), get()) }

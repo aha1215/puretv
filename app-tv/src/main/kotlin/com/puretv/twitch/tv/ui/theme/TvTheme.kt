@@ -114,10 +114,10 @@ val themeColors: Map<ThemeVariant, PureTvTvColors> = mapOf(
         secondaryContainer = Color(0xFF4A4458), onSecondaryContainer = Color(0xFFE8DEF8),
         tertiary = Color(0xFFEFB8C8), onTertiary = Color(0xFF4A2532),
         tertiaryContainer = Color(0xFF633B48), onTertiaryContainer = Color(0xFFFFD8E4),
-        surface = Color(0xFF141218), onSurface = Color(0xFFE6E0E9), onSurfaceVariant = Color(0xFFCAC4D0),
-        surfaceLowest = Color(0xFF0F0D13), surfaceLow = Color(0xFF1D1B20),
-        surfaceContainer = Color(0xFF211F26), surfaceHigh = Color(0xFF2B2930), surfaceHighest = Color(0xFF36343B),
-        outline = Color(0xFF938F99), outlineVariant = Color(0xFF49454F),
+        surface = Color(0xFF15171A), onSurface = Color(0xFFF0F1F3), onSurfaceVariant = Color(0xFFB9BDC4),
+        surfaceLowest = Color(0xFF101113), surfaceLow = Color(0xFF1C1F23),
+        surfaceContainer = Color(0xFF22252A), surfaceHigh = Color(0xFF2B2F35), surfaceHighest = Color(0xFF363B42),
+        outline = Color(0xFF9298A1), outlineVariant = Color(0xFF474C53),
         error = Color(0xFFFFB4AB), errorContainer = Color(0xFF93000A), onErrorContainer = Color(0xFFFFDAD6),
     ),
     ThemeVariant.EMBER to PureTvTvColors(
@@ -212,38 +212,38 @@ object PureTvTvMotion {
     const val Fast = 150
     const val Medium = 250
 
-    /** Overshoots and settles back, which is what makes focus feel physical. */
-    val MorphSpring: SpringSpec<Dp> = spring(dampingRatio = 0.55f, stiffness = Spring.StiffnessMediumLow)
-    val MorphSpringFloat: SpringSpec<Float> = spring(dampingRatio = 0.55f, stiffness = Spring.StiffnessMediumLow)
+    /** A quick, restrained settle keeps remote focus clear without making the UI feel bouncy. */
+    val MorphSpring: SpringSpec<Dp> = spring(dampingRatio = 0.82f, stiffness = Spring.StiffnessMedium)
+    val MorphSpringFloat: SpringSpec<Float> = spring(dampingRatio = 0.82f, stiffness = Spring.StiffnessMedium)
 
     val Standard: Easing = CubicBezierEasing(0.2f, 0f, 0f, 1f)
 
     /** How far a focused card grows. Small enough not to overlap its neighbours. */
-    const val FocusScale = 1.08f
+    const val FocusScale = 1.025f
 }
 
 // ---- Typography --------------------------------------------------------------
 
 /**
- * The 10-foot type scale. Same three families as the phone and desktop apps,
- * sized up for couch viewing: nothing below 16sp, and body copy at 20sp.
+ * The TV type scale keeps headlines legible across a room while leaving room
+ * for content grids and remote-driven controls on 1080p displays.
  */
 val PureTvTvTypography = Typography(
-    displayLarge = TextStyle(fontFamily = BricolageGrotesque, fontSize = 57.sp, lineHeight = 62.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = (-1.6).sp),
-    displayMedium = TextStyle(fontFamily = BricolageGrotesque, fontSize = 45.sp, lineHeight = 52.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = (-1.1).sp),
-    displaySmall = TextStyle(fontFamily = BricolageGrotesque, fontSize = 36.sp, lineHeight = 44.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = (-0.8).sp),
-    headlineLarge = TextStyle(fontFamily = BricolageGrotesque, fontSize = 34.sp, lineHeight = 42.sp, fontWeight = FontWeight.Bold, letterSpacing = (-0.6).sp),
-    headlineMedium = TextStyle(fontFamily = BricolageGrotesque, fontSize = 30.sp, lineHeight = 38.sp, fontWeight = FontWeight.Bold, letterSpacing = (-0.4).sp),
-    headlineSmall = TextStyle(fontFamily = BricolageGrotesque, fontSize = 26.sp, lineHeight = 34.sp, fontWeight = FontWeight.Bold, letterSpacing = (-0.3).sp),
-    titleLarge = TextStyle(fontFamily = BricolageGrotesque, fontSize = 24.sp, lineHeight = 30.sp, fontWeight = FontWeight.Bold, letterSpacing = (-0.2).sp),
-    titleMedium = TextStyle(fontFamily = Archivo, fontSize = 20.sp, lineHeight = 26.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 0.15.sp),
-    titleSmall = TextStyle(fontFamily = Archivo, fontSize = 18.sp, lineHeight = 24.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 0.1.sp),
-    bodyLarge = TextStyle(fontFamily = Archivo, fontSize = 20.sp, lineHeight = 28.sp, fontWeight = FontWeight.Normal, letterSpacing = 0.4.sp),
-    bodyMedium = TextStyle(fontFamily = Archivo, fontSize = 18.sp, lineHeight = 25.sp, fontWeight = FontWeight.Normal, letterSpacing = 0.25.sp),
-    bodySmall = TextStyle(fontFamily = Archivo, fontSize = 16.sp, lineHeight = 22.sp, fontWeight = FontWeight.Normal, letterSpacing = 0.4.sp),
-    labelLarge = TextStyle(fontFamily = Archivo, fontSize = 18.sp, lineHeight = 24.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 0.1.sp),
-    labelMedium = TextStyle(fontFamily = Archivo, fontSize = 16.sp, lineHeight = 22.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 0.5.sp),
-    labelSmall = TextStyle(fontFamily = Archivo, fontSize = 14.sp, lineHeight = 19.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 0.5.sp),
+    displayLarge = TextStyle(fontFamily = BricolageGrotesque, fontSize = 34.sp, lineHeight = 40.sp, fontWeight = FontWeight.Bold, letterSpacing = (-0.7).sp),
+    displayMedium = TextStyle(fontFamily = BricolageGrotesque, fontSize = 27.sp, lineHeight = 33.sp, fontWeight = FontWeight.Bold, letterSpacing = (-0.45).sp),
+    displaySmall = TextStyle(fontFamily = BricolageGrotesque, fontSize = 23.sp, lineHeight = 29.sp, fontWeight = FontWeight.Bold, letterSpacing = (-0.3).sp),
+    headlineLarge = TextStyle(fontFamily = BricolageGrotesque, fontSize = 22.sp, lineHeight = 28.sp, fontWeight = FontWeight.Bold, letterSpacing = (-0.2).sp),
+    headlineMedium = TextStyle(fontFamily = BricolageGrotesque, fontSize = 19.sp, lineHeight = 25.sp, fontWeight = FontWeight.Bold, letterSpacing = (-0.15).sp),
+    headlineSmall = TextStyle(fontFamily = BricolageGrotesque, fontSize = 17.sp, lineHeight = 23.sp, fontWeight = FontWeight.SemiBold, letterSpacing = (-0.1).sp),
+    titleLarge = TextStyle(fontFamily = BricolageGrotesque, fontSize = 17.sp, lineHeight = 23.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 0.sp),
+    titleMedium = TextStyle(fontFamily = Archivo, fontSize = 15.sp, lineHeight = 20.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 0.1.sp),
+    titleSmall = TextStyle(fontFamily = Archivo, fontSize = 13.sp, lineHeight = 18.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 0.1.sp),
+    bodyLarge = TextStyle(fontFamily = Archivo, fontSize = 14.sp, lineHeight = 20.sp, fontWeight = FontWeight.Normal, letterSpacing = 0.2.sp),
+    bodyMedium = TextStyle(fontFamily = Archivo, fontSize = 13.sp, lineHeight = 18.sp, fontWeight = FontWeight.Normal, letterSpacing = 0.15.sp),
+    bodySmall = TextStyle(fontFamily = Archivo, fontSize = 12.sp, lineHeight = 16.sp, fontWeight = FontWeight.Normal, letterSpacing = 0.2.sp),
+    labelLarge = TextStyle(fontFamily = Archivo, fontSize = 14.sp, lineHeight = 18.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 0.05.sp),
+    labelMedium = TextStyle(fontFamily = Archivo, fontSize = 12.sp, lineHeight = 16.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 0.25.sp),
+    labelSmall = TextStyle(fontFamily = Archivo, fontSize = 11.sp, lineHeight = 15.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 0.3.sp),
 )
 
 /** The monospace layer Material's Typography has no slot for. */
@@ -252,10 +252,10 @@ object PureTvTvType {
     val ui: FontFamily = Archivo
     val mono: FontFamily = IBMPlexMono
 
-    val kicker = TextStyle(fontFamily = Archivo, fontSize = 16.sp, lineHeight = 22.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 1.sp)
-    val data = TextStyle(fontFamily = IBMPlexMono, fontSize = 18.sp, lineHeight = 24.sp, fontWeight = FontWeight.Normal, letterSpacing = 0.3.sp)
-    val dataSmall = TextStyle(fontFamily = IBMPlexMono, fontSize = 15.sp, lineHeight = 20.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 0.8.sp)
-    val badge = TextStyle(fontFamily = IBMPlexMono, fontSize = 15.sp, lineHeight = 20.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 1.sp)
+    val kicker = TextStyle(fontFamily = Archivo, fontSize = 12.sp, lineHeight = 16.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 0.7.sp)
+    val data = TextStyle(fontFamily = IBMPlexMono, fontSize = 14.sp, lineHeight = 19.sp, fontWeight = FontWeight.Normal, letterSpacing = 0.2.sp)
+    val dataSmall = TextStyle(fontFamily = IBMPlexMono, fontSize = 11.sp, lineHeight = 15.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 0.5.sp)
+    val badge = TextStyle(fontFamily = IBMPlexMono, fontSize = 11.sp, lineHeight = 15.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 0.6.sp)
 }
 
 // ---- Composition locals ------------------------------------------------------

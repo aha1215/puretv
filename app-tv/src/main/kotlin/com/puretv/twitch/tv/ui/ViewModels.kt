@@ -16,16 +16,26 @@ import com.puretv.twitch.core.model.ChatEvent
 import com.puretv.twitch.core.model.ChatMessage
 import com.puretv.twitch.core.model.StreamInfo
 import com.puretv.twitch.core.model.GameInfo
+import com.puretv.twitch.core.model.VideoInfo
+import com.puretv.twitch.core.model.VideoType
 import com.puretv.twitch.core.repository.ChannelRepository
 import com.puretv.twitch.core.repository.StreamRepository
 import com.puretv.twitch.core.repository.UserRepository
+import com.puretv.twitch.core.repository.VodRepository
+import com.puretv.twitch.core.stream.TwitchResumeHistoryUnavailableException
 import com.puretv.twitch.tv.data.AppSettingsStore
+import com.puretv.twitch.tv.data.ChatslatorTranslationClient
 import com.puretv.twitch.tv.data.TokenRefresher
 import com.puretv.twitch.tv.data.db.CachedStreamDao
 import com.puretv.twitch.tv.data.db.toCachedStream
 import com.puretv.twitch.tv.data.db.toStreamInfo
 import io.ktor.client.HttpClient
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -33,6 +43,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import java.time.Instant
 
 /**
  * SECTION 11 / 07 — ViewModels backing the TV screens. Functionally
@@ -46,6 +59,9 @@ data class HomeUiState(
     val isLoggedIn: Boolean = false,
     val followedLive: List<StreamInfo> = emptyList(),
     val topStreams: List<StreamInfo> = emptyList(),
+    val latestFollowedVods: List<VideoInfo> = emptyList(),
+    val latestFollowedVodsLoading: Boolean = false,
+    val viewedVods: List<AppSettingsStore.ViewedVod> = emptyList(),
     val isLoading: Boolean = false,
     val error: String? = null,
 )
@@ -65,6 +81,7 @@ class HomeViewModel(
     private val streamRepository: StreamRepository,
     private val userRepository: UserRepository,
     private val settings: AppSettingsStore,
+    private val vodRepository: VodRepository,
     private val cachedStreamDao: CachedStreamDao,
     private val tokenRefresher: TokenRefresher,
 ) : ViewModel() {
@@ -78,8 +95,17 @@ class HomeViewModel(
     // Cancel-and-replace so a resume + timer refresh landing together can't run
     // two overlapping loads that flicker isLoading against each other.
     private var refreshJob: Job? = null
+    private var viewedVodPositionRefreshJob: Job? = null
+    private var followedVodsRefreshJob: Job? = null
+    private var lastViewedVodPositionRefreshAtMs = 0L
+    private var lastFollowedVodsRefreshAtMs = 0L
+    private var followedVodChannelIds: List<String> = emptyList()
+    private var remoteHistoryUnavailableToken: String? = null
 
     init {
+        viewModelScope.launch {
+            settings.viewedVods.collect { vods -> _state.update { it.copy(viewedVods = vods) } }
+        }
         // Cached-first: paint last session's streams instantly, before any network.
         viewModelScope.launch {
             cachedStreamDao.observeAll().collect { cached ->
@@ -108,6 +134,18 @@ class HomeViewModel(
         viewModelScope.launch {
             settings.flow.collect { prefs ->
                 _state.update { it.copy(isLoggedIn = prefs.accessToken.isNotBlank()) }
+                if (prefs.accessToken.isBlank()) {
+                    userRepository.clearFollows()
+                    followedVodsRefreshJob?.cancel()
+                    lastFollowedVodsRefreshAtMs = 0L
+                    _state.update { it.copy(latestFollowedVods = emptyList(), latestFollowedVodsLoading = false) }
+                }
+            }
+        }
+        viewModelScope.launch {
+            settings.webResumeSessionRevision.collect {
+                remoteHistoryUnavailableToken = null
+                if (settings.webResumeSessionLinked.value) refreshViewedVodPositions(force = true)
             }
         }
         // "Following — Live now": query live status directly for the followed
@@ -124,21 +162,159 @@ class HomeViewModel(
                 _state.update { it.copy(followedLive = live) }
             }
         }
+        viewModelScope.launch {
+            userRepository.followedChannels.collect { follows ->
+                val channelIds = follows.map { it.broadcaster_id }
+                if (channelIds != followedVodChannelIds) {
+                    followedVodChannelIds = channelIds
+                    refreshLatestFollowedVods(force = true)
+                }
+            }
+        }
         refresh()
     }
 
     fun refresh() {
+        refreshViewedVodPositions()
         refreshJob?.cancel()
         refreshJob = viewModelScope.launch {
             _state.update { it.copy(isLoading = it.topStreams.isEmpty(), error = null) }
             val prefs = settings.flow.first()
             if (prefs.userId.isNotBlank()) runCatching { userRepository.loadFollows(prefs.userId) }
+            if (userRepository.followedChannels.value.map { it.broadcaster_id } == followedVodChannelIds) {
+                refreshLatestFollowedVods()
+            }
             val ok = loadTopStreamsResilient()
             _state.update {
                 it.copy(
                     isLoading = false,
                     error = if (!ok && it.topStreams.isEmpty()) "Couldn't load. Check your connection and try again." else null,
                 )
+            }
+        }
+    }
+
+    /** Load each followed channel's newest archive, with bounded API concurrency. */
+    private fun refreshLatestFollowedVods(force: Boolean = false) {
+        val now = System.currentTimeMillis()
+        if (!force && now - lastFollowedVodsRefreshAtMs < FOLLOWED_VODS_REFRESH_INTERVAL_MS) return
+        lastFollowedVodsRefreshAtMs = now
+        val follows = userRepository.followedChannels.value
+        followedVodsRefreshJob?.cancel()
+        if (follows.isEmpty()) {
+            _state.update { it.copy(latestFollowedVods = emptyList(), latestFollowedVodsLoading = false) }
+            return
+        }
+
+        _state.update { it.copy(latestFollowedVods = emptyList(), latestFollowedVodsLoading = true) }
+        lateinit var job: Job
+        job = viewModelScope.launch(start = CoroutineStart.LAZY) {
+            val requestLimit = Semaphore(FOLLOWED_VOD_REQUEST_CONCURRENCY)
+            try {
+                // Twitch may expose an archive while its broadcast is still live.
+                // Capture the current start time so the shelf can skip that growing,
+                // unfinished recording and use the latest completed archive instead.
+                val liveByUserId = runCatching {
+                    streamRepository.streamsForChannels(follows.map { it.broadcaster_login })
+                        .associateBy { it.userId }
+                }.getOrDefault(emptyMap())
+                val videos = coroutineScope {
+                    follows.map { channel ->
+                        async {
+                            requestLimit.withPermit {
+                                try {
+                                    val liveStartedAt = liveByUserId[channel.broadcaster_id]
+                                        ?.startedAt
+                                        ?.let { runCatching { Instant.parse(it) }.getOrNull() }
+                                    vodRepository.videosFor(
+                                        userId = channel.broadcaster_id,
+                                        type = VideoType.ARCHIVE,
+                                        // One extra result lets us fall back to the last
+                                        // completed broadcast when Twitch returns the
+                                        // current live archive at the top of the list.
+                                        first = if (liveStartedAt != null) 2 else 1,
+                                    ).videos.firstOrNull { video ->
+                                        val createdAt = runCatching { Instant.parse(video.createdAt) }.getOrNull()
+                                        liveStartedAt == null || createdAt?.isBefore(liveStartedAt) == true
+                                    }
+                                } catch (cancelled: CancellationException) {
+                                    throw cancelled
+                                } catch (_: Exception) {
+                                    null
+                                }
+                            }
+                        }
+                    }.awaitAll()
+                }
+                _state.update { current ->
+                    current.copy(
+                        latestFollowedVods = videos.filterNotNull()
+                            .distinctBy(VideoInfo::id)
+                            .sortedByDescending(VideoInfo::createdAt)
+                            .take(MAX_LATEST_FOLLOWED_VODS),
+                    )
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } finally {
+                if (followedVodsRefreshJob === job) {
+                    _state.update { it.copy(latestFollowedVodsLoading = false) }
+                }
+            }
+        }
+        followedVodsRefreshJob = job
+        job.start()
+    }
+
+    /** Reconcile recent history against Twitch once per refresh window; keep the farther checkpoint. */
+    private fun refreshViewedVodPositions(force: Boolean = false) {
+        val now = System.currentTimeMillis()
+        if (!force && now - lastViewedVodPositionRefreshAtMs < VIEWED_VOD_POSITION_REFRESH_INTERVAL_MS) return
+        lastViewedVodPositionRefreshAtMs = now
+        viewedVodPositionRefreshJob?.cancel()
+        viewedVodPositionRefreshJob = viewModelScope.launch {
+            try {
+                val accessToken = settings.webResumeToken()?.takeIf(String::isNotBlank)
+                    ?: settings.flow.first().accessToken.takeIf(String::isNotBlank)
+                if (accessToken == null) {
+                    remoteHistoryUnavailableToken = null
+                    Log.i(TAG, "Skipping remote VOD history refresh: no Twitch session")
+                    return@launch
+                }
+                if (remoteHistoryUnavailableToken == accessToken) return@launch
+                remoteHistoryUnavailableToken = null
+
+                val remotePositions = vodRepository.playbackPositions(accessToken).getOrElse { error ->
+                    if (error is TwitchResumeHistoryUnavailableException) {
+                        remoteHistoryUnavailableToken = accessToken
+                        Log.i(
+                            TAG,
+                            "Twitch private resume history is unavailable; retaining local VOD checkpoints.",
+                        )
+                    } else {
+                        Log.w(TAG, "Twitch VOD history lookup failed: ${error.message}", error)
+                    }
+                    return@launch
+                }
+
+                val recentVods = settings.viewedVods.first()
+                var matched = 0
+                var advanced = 0
+                recentVods.forEach { vod ->
+                    val remotePosition = remotePositions[vod.id] ?: return@forEach
+                    matched++
+                    val localPosition = settings.vodPlaybackPosition(vod.id)
+                    if (remotePosition > localPosition) {
+                        settings.advanceVodPlaybackPosition(vod.id, remotePosition)
+                        advanced++
+                    }
+                }
+                Log.i(TAG, "Twitch VOD history refresh: ${remotePositions.size} remote entries, " +
+                    "$matched/${recentVods.size} local matches, $advanced local positions advanced")
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                Log.w(TAG, "Twitch VOD history refresh failed", error)
             }
         }
     }
@@ -155,8 +331,13 @@ class HomeViewModel(
     }
 
     private companion object {
+        const val TAG = "TvHomeViewModel"
         // Streams older than this are dropped from the instant-paint cache.
         const val CACHE_TTL_MS = 24L * 60 * 60 * 1000
+        const val VIEWED_VOD_POSITION_REFRESH_INTERVAL_MS = 60_000L
+        const val FOLLOWED_VODS_REFRESH_INTERVAL_MS = 15L * 60 * 1000
+        const val FOLLOWED_VOD_REQUEST_CONCURRENCY = 8
+        const val MAX_LATEST_FOLLOWED_VODS = 24
     }
 }
 
@@ -362,6 +543,7 @@ class StreamViewModel(
     private val emoteRepository: EmoteRepository,
     private val adBlockEngine: AdBlockEngine,
     private val settingsStore: AppSettingsStore,
+    private val chatTranslator: ChatslatorTranslationClient,
 ) : ViewModel() {
     private val _state = MutableStateFlow(StreamUiState())
     val state: StateFlow<StreamUiState> = _state.asStateFlow()
@@ -395,7 +577,24 @@ class StreamViewModel(
                     _state.update { current ->
                         current.copy(chatMessages = (current.chatMessages + event.message).takeLast(200))
                     }
+                    translateChatMessage(event.message)
                 }
+            }
+        }
+    }
+
+    private fun translateChatMessage(message: ChatMessage) {
+        if (message.isSystem || message.deleted) return
+        viewModelScope.launch {
+            val translationSettings = settingsStore.chatTranslation.first()
+            if (!translationSettings.enabled) return@launch
+            val translation = chatTranslator.translate(message.message, translationSettings.targetLanguage) ?: return@launch
+            _state.update { current ->
+                current.copy(
+                    chatMessages = current.chatMessages.map { row ->
+                        if (row.id == message.id) row.copy(translatedMessage = translation.text) else row
+                    },
+                )
             }
         }
     }

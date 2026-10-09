@@ -4,6 +4,7 @@ import android.app.Application
 import com.puretv.twitch.core.adblock.AdBlockEngine
 import com.puretv.twitch.core.di.coreModule
 import com.puretv.twitch.tv.data.AppSettingsStore
+import com.puretv.twitch.tv.data.BrowserVodSyncServer
 import com.puretv.twitch.tv.data.TokenRefresher
 import com.puretv.twitch.tv.di.tvModule
 import com.puretv.twitch.tv.update.TvUpdateManager
@@ -61,6 +62,7 @@ class PureTvTvApp : Application() {
             // key is generated (hundreds of ms), doing it here keeps that off the
             // first composition where it would risk a startup ANR / visible jank.
             koinApp.koin.get<AppSettingsStore>()
+            koinApp.koin.get<BrowserVodSyncServer>().start()
 
             // Best-effort: extend the session with the stored refresh token once per
             // process (off-main, fail-soft, a failure keeps the current session).

@@ -124,6 +124,8 @@ data class ChatMessage(
     /** This incoming message @-mentions the local viewer; drives row highlighting.
      *  Viewer-relative, so it is computed at receipt (when selfLogin is known). */
     val mentionsSelf: Boolean = false,
+    /** Per-viewer translation for TV chat; the original text remains in [message]. */
+    val translatedMessage: String? = null,
 )
 
 /** A non-base emote drawn over a base emote (7TV zero-width / overlay cosmetics). */

@@ -87,9 +87,9 @@ fun TvCategoryScreen(
             else -> LazyVerticalGrid(
                 modifier = Modifier.fillMaxSize(),
                 columns = GridCells.Adaptive(minSize = 220.dp),
-                horizontalArrangement = Arrangement.spacedBy(24.dp),
-                verticalArrangement = Arrangement.spacedBy(24.dp),
-                contentPadding = PaddingValues(start = 32.dp, end = 32.dp, top = 24.dp, bottom = 40.dp),
+                horizontalArrangement = Arrangement.spacedBy(18.dp),
+                verticalArrangement = Arrangement.spacedBy(18.dp),
+                contentPadding = PaddingValues(start = 28.dp, end = 28.dp, top = 18.dp, bottom = 28.dp),
             ) {
                 items(state.streams, key = { it.userLogin }) { stream ->
                     TvStreamCard(stream = stream, onClick = { onOpenStream(stream.userLogin) })
@@ -110,7 +110,7 @@ private fun CategoryHeader(displayName: String, streams: List<StreamInfo>, onBac
     val totalViewers = remember(streams) { streams.sumOf { it.viewerCount } }
     val artUrl = remember(streams) { streams.firstOrNull { it.thumbnailUrl.isNotBlank() }?.thumbnailUrl }
 
-    Box(modifier = Modifier.fillMaxWidth().height(300.dp)) {
+    Box(modifier = Modifier.fillMaxWidth().height(208.dp)) {
         Box(Modifier.fillMaxSize().background(c.surfaceHigh))
         artUrl?.let { url ->
             AsyncImage(
@@ -133,13 +133,13 @@ private fun CategoryHeader(displayName: String, streams: List<StreamInfo>, onBac
             icon = ExpressiveIcons.Back,
             contentDescription = "Back",
             onClick = onBack,
-            modifier = Modifier.align(Alignment.TopStart).padding(24.dp),
+            modifier = Modifier.align(Alignment.TopStart).padding(20.dp),
         )
         Column(
             modifier = Modifier
                 .align(Alignment.BottomStart)
                 .fillMaxWidth()
-                .padding(horizontal = 40.dp, vertical = 32.dp),
+                .padding(horizontal = 28.dp, vertical = 20.dp),
         ) {
             Text(
                 text = displayName,

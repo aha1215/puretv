@@ -26,6 +26,19 @@ class VodRepository(
     suspend fun resolvePlayableVod(vodId: String, oauthToken: String? = null): MasterPlaylistResult =
         vodResolver.resolveVodMasterPlaylist(vodId, oauthToken)
 
+    suspend fun playbackPosition(vodId: String, oauthToken: String?): Long? =
+        vodResolver.playbackPosition(vodId, oauthToken)
+
+    suspend fun playbackPositions(oauthToken: String?): Result<Map<String, Long>> =
+        vodResolver.playbackPositions(oauthToken)
+
+    suspend fun updatePlaybackPosition(
+        vodId: String,
+        userId: String,
+        positionSeconds: Long,
+        oauthToken: String?,
+    ): Boolean = vodResolver.updatePlaybackPosition(vodId, userId, positionSeconds, oauthToken)
+
     suspend fun loadStoryboard(vodId: String): com.puretv.twitch.core.stream.Storyboard? =
         vodResolver.loadStoryboard(vodId)
 

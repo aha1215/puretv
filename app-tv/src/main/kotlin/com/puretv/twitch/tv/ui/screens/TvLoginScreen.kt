@@ -108,8 +108,8 @@ fun TvLoginScreen(onLoggedIn: () -> Unit, onBack: () -> Unit, viewModel: LoginVi
                     icon = ExpressiveIcons.Back,
                     contentDescription = "Back",
                     onClick = onBack,
-                    boxSize = 56.dp,
-                    iconSize = 26.dp,
+                    boxSize = 48.dp,
+                    iconSize = 22.dp,
                 )
                 Spacer(Modifier.width(20.dp))
                 AppMark(size = 48.dp)

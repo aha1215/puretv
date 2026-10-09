@@ -5,6 +5,9 @@ import android.content.SharedPreferences
 import android.util.Log
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import java.security.KeyStore
 import java.util.Collections
 
@@ -40,6 +43,8 @@ import java.util.Collections
  */
 class SecureTokenStore(context: Context) {
 
+    data class WebResumeLink(val code: String, val expiresAtMs: Long)
+
     private val appContext = context.applicationContext
 
     /** Null only when the device's keystore is broken past recovery. */
@@ -53,6 +58,13 @@ class SecureTokenStore(context: Context) {
      * ConcurrentHashMap cannot hold the null a signed-out token is.
      */
     private val memory: MutableMap<String, String?> = Collections.synchronizedMap(HashMap())
+
+    private val _webResumeSessionLinked = MutableStateFlow(!webResumeToken().isNullOrBlank())
+    val webResumeSessionLinked: StateFlow<Boolean> = _webResumeSessionLinked.asStateFlow()
+    private val _webResumeSessionRevision = MutableStateFlow(0L)
+    val webResumeSessionRevision: StateFlow<Long> = _webResumeSessionRevision.asStateFlow()
+    private val _pendingWebResumeLink = MutableStateFlow(loadPendingWebResumeLink())
+    val pendingWebResumeLink: StateFlow<WebResumeLink?> = _pendingWebResumeLink.asStateFlow()
 
     // Deliberately every Exception, not just the documented
     // GeneralSecurityException/IOException pair. OEM keystore and Tink paths
@@ -115,6 +127,41 @@ class SecureTokenStore(context: Context) {
     fun refreshToken(): String? = read(KEY_REFRESH)
     fun username(): String? = read(KEY_USERNAME)
     fun userId(): String? = read(KEY_USER_ID)
+    fun webResumeToken(): String? = read(KEY_WEB_RESUME)
+
+    fun saveWebResumeToken(token: String) {
+        val store = prefs
+        if (store == null) memory[KEY_WEB_RESUME] = token
+        else store.edit().putString(KEY_WEB_RESUME, token).apply()
+        _webResumeSessionLinked.value = token.isNotBlank()
+        _webResumeSessionRevision.value += 1L
+    }
+
+    fun clearWebResumeToken() {
+        val store = prefs
+        if (store == null) memory.remove(KEY_WEB_RESUME)
+        else store.edit().remove(KEY_WEB_RESUME).apply()
+        _webResumeSessionLinked.value = false
+        _webResumeSessionRevision.value += 1L
+    }
+
+    fun pendingWebResumeLink(): WebResumeLink? {
+        val pending = loadPendingWebResumeLink()
+        _pendingWebResumeLink.value = pending
+        return pending
+    }
+
+    fun savePendingWebResumeLink(code: String, expiresAtMs: Long) {
+        write(KEY_WEB_LINK_CODE, code)
+        write(KEY_WEB_LINK_EXPIRY, expiresAtMs.toString())
+        _pendingWebResumeLink.value = WebResumeLink(code, expiresAtMs)
+    }
+
+    fun clearPendingWebResumeLink() {
+        write(KEY_WEB_LINK_CODE, null)
+        write(KEY_WEB_LINK_EXPIRY, null)
+        _pendingWebResumeLink.value = null
+    }
 
     fun save(accessToken: String?, refreshToken: String?, username: String = "", userId: String = "") {
         val store = prefs
@@ -136,6 +183,9 @@ class SecureTokenStore(context: Context) {
     fun clear() {
         memory.clear()
         prefs?.edit()?.clear()?.apply()
+        _webResumeSessionLinked.value = false
+        _webResumeSessionRevision.value += 1L
+        _pendingWebResumeLink.value = null
     }
 
     /**
@@ -148,6 +198,32 @@ class SecureTokenStore(context: Context) {
     private fun read(key: String): String? {
         val store = prefs ?: return memory[key]
         return store.getString(key, null)
+    }
+
+    private fun write(key: String, value: String?) {
+        val store = prefs
+        if (store == null) {
+            if (value == null) memory.remove(key) else memory[key] = value
+        } else {
+            val editor = store.edit()
+            if (value == null) editor.remove(key) else editor.putString(key, value)
+            editor.apply()
+        }
+    }
+
+    private fun loadPendingWebResumeLink(): WebResumeLink? {
+        val code = read(KEY_WEB_LINK_CODE)?.takeIf { it.length == WEB_RESUME_LINK_CODE_LENGTH } ?: run {
+            write(KEY_WEB_LINK_CODE, null)
+            write(KEY_WEB_LINK_EXPIRY, null)
+            return null
+        }
+        val expiresAtMs = read(KEY_WEB_LINK_EXPIRY)?.toLongOrNull() ?: return null
+        if (expiresAtMs <= System.currentTimeMillis()) {
+            write(KEY_WEB_LINK_CODE, null)
+            write(KEY_WEB_LINK_EXPIRY, null)
+            return null
+        }
+        return WebResumeLink(code, expiresAtMs)
     }
 
     private companion object {
@@ -166,5 +242,9 @@ class SecureTokenStore(context: Context) {
         const val KEY_REFRESH = "refresh_token"
         const val KEY_USERNAME = "username"
         const val KEY_USER_ID = "user_id"
+        const val KEY_WEB_RESUME = "web_resume_session_token"
+        const val KEY_WEB_LINK_CODE = "web_resume_link_code"
+        const val KEY_WEB_LINK_EXPIRY = "web_resume_link_expiry"
+        const val WEB_RESUME_LINK_CODE_LENGTH = 10
     }
 }

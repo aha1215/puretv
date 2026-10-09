@@ -85,7 +85,7 @@ fun Modifier.tvFocusSurface(
     scale: Float = PureTvTvMotion.FocusScale,
     ring: Boolean = true,
     ringColor: Color? = null,
-    ringWidth: Dp = 3.dp,
+    ringWidth: Dp = 2.dp,
     idleBorderColor: Color = Color.Transparent,
 ): Modifier = composed {
     val focused by interaction.collectIsFocusedAsState()
@@ -158,11 +158,11 @@ fun Modifier.tvFocusClickable(
 
 enum class TvButtonStyle { Filled, Tonal, Outlined, Text, FilledTertiary }
 
-/** Sized for a remote and a couch: nothing under 56dp tall, nothing under 18sp. */
+/** Compact couch controls retain a generous focus target without crowding the screen. */
 enum class TvButtonSize(val height: Dp, val hPad: Dp, val iconSize: Dp, val fontSize: TextUnit) {
-    Medium(56.dp, 28.dp, 24.dp, 18.sp),
-    Large(64.dp, 34.dp, 28.dp, 20.sp),
-    XLarge(76.dp, 40.dp, 32.dp, 22.sp),
+    Medium(48.dp, 20.dp, 20.dp, 16.sp),
+    Large(54.dp, 24.dp, 22.dp, 17.sp),
+    XLarge(58.dp, 26.dp, 24.dp, 18.sp),
 }
 
 @Composable
@@ -181,24 +181,16 @@ fun TvExpressiveButton(
     val focused by interaction.collectIsFocusedAsState()
 
     val restBg = when (style) {
-        TvButtonStyle.Filled -> c.primary
-        TvButtonStyle.Tonal -> c.secondaryContainer
-        TvButtonStyle.FilledTertiary -> c.tertiaryContainer
+        TvButtonStyle.Filled -> c.surfaceHigh
+        TvButtonStyle.Tonal -> c.surfaceContainer
+        TvButtonStyle.FilledTertiary -> c.surfaceHigh
         TvButtonStyle.Outlined, TvButtonStyle.Text -> Color.Transparent
     }
-    // Focus flips low-emphasis buttons to a filled primary. On TV the focused
-    // control has to be obvious from across the room, so it takes the strongest
-    // treatment available rather than a subtle tint.
-    val focusBg = when (style) {
-        TvButtonStyle.Filled -> c.primary
-        TvButtonStyle.FilledTertiary -> c.tertiaryContainer
-        else -> c.primary
-    }
+    // The accent is reserved for the control currently under remote focus.
+    val focusBg = c.primary
     val ink = when {
-        style == TvButtonStyle.Filled -> c.onPrimary
-        style == TvButtonStyle.FilledTertiary -> c.onTertiaryContainer
         focused -> c.onPrimary
-        style == TvButtonStyle.Tonal -> c.onSecondaryContainer
+        style == TvButtonStyle.Tonal -> c.onSurface
         else -> c.onSurface
     }
 
@@ -216,7 +208,7 @@ fun TvExpressiveButton(
                 focusRadius = shapes.pillFocus,
                 color = restBg,
                 focusColor = focusBg,
-                scale = 1.05f,
+                scale = 1.025f,
                 enabled = enabled,
             )
             .padding(horizontal = size.hPad),
@@ -242,8 +234,8 @@ fun TvExpressiveIconButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     style: TvButtonStyle = TvButtonStyle.Tonal,
-    boxSize: Dp = 64.dp,
-    iconSize: Dp = 30.dp,
+    boxSize: Dp = 48.dp,
+    iconSize: Dp = 22.dp,
     enabled: Boolean = true,
 ) {
     val c = PureTvTvTheme.colors
@@ -252,13 +244,12 @@ fun TvExpressiveIconButton(
     val focused by interaction.collectIsFocusedAsState()
 
     val restBg = when (style) {
-        TvButtonStyle.Filled -> c.primary
+        TvButtonStyle.Filled -> c.surfaceHigh
         TvButtonStyle.Tonal -> c.surfaceHigh
-        TvButtonStyle.FilledTertiary -> c.tertiaryContainer
+        TvButtonStyle.FilledTertiary -> c.surfaceHigh
         TvButtonStyle.Outlined, TvButtonStyle.Text -> Color.Transparent
     }
     val ink = when {
-        style == TvButtonStyle.Filled -> c.onPrimary
         focused -> c.onPrimary
         else -> c.onSurface
     }
@@ -274,7 +265,7 @@ fun TvExpressiveIconButton(
                 focusRadius = shapes.pillFocus,
                 color = restBg,
                 focusColor = c.primary,
-                scale = 1.08f,
+                scale = 1.025f,
                 enabled = enabled,
             ),
     ) {
@@ -305,27 +296,29 @@ fun TvFilterChip(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         modifier = modifier
-            .height(52.dp)
+            .height(48.dp)
             .tvFocusClickable(
                 interaction = interaction,
                 onClick = onClick,
-                restRadius = 26.dp,
+                restRadius = 24.dp,
                 focusRadius = shapes.pillFocus,
                 color = if (selected) c.secondaryContainer else Color.Transparent,
                 focusColor = c.primary,
-                scale = 1.05f,
+                scale = 1.035f,
                 idleBorderColor = if (selected) Color.Transparent else c.outlineVariant,
             )
-            .padding(horizontal = 22.dp),
+            .padding(horizontal = 16.dp),
     ) {
-        if (selected) {
-            Icon(
-                ExpressiveIcons.Check,
-                contentDescription = null,
-                tint = if (focused) c.onPrimary else c.onSecondaryContainer,
-                modifier = Modifier.size(22.dp),
-            )
-        }
+        Icon(
+            ExpressiveIcons.Check,
+            contentDescription = null,
+            tint = when {
+                !selected -> Color.Transparent
+                focused -> c.onPrimary
+                else -> c.onSecondaryContainer
+            },
+            modifier = Modifier.size(18.dp),
+        )
         Text(
             label,
             color = when {
@@ -424,7 +417,7 @@ fun TvLiveDot(modifier: Modifier = Modifier, size: Dp = 9.dp, color: Color? = nu
 fun TvPanel(
     modifier: Modifier = Modifier,
     color: Color? = null,
-    padding: Dp = 32.dp,
+    padding: Dp = 24.dp,
     content: @Composable () -> Unit,
 ) {
     val c = PureTvTvTheme.colors
@@ -444,7 +437,7 @@ fun TvPanel(
 fun TvPageTitle(text: String, modifier: Modifier = Modifier) {
     Text(
         text,
-        style = MaterialTheme.typography.displayMedium,
+        style = MaterialTheme.typography.headlineLarge,
         color = PureTvTvTheme.colors.onSurface,
         modifier = modifier,
     )
@@ -455,7 +448,7 @@ fun TvPageTitle(text: String, modifier: Modifier = Modifier) {
 fun TvSectionHeading(title: String, modifier: Modifier = Modifier) {
     Text(
         title,
-        style = MaterialTheme.typography.headlineMedium,
+        style = MaterialTheme.typography.headlineSmall,
         color = PureTvTvTheme.colors.onSurface,
         maxLines = 1,
         overflow = TextOverflow.Ellipsis,

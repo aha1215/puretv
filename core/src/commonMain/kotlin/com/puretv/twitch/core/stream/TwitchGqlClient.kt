@@ -5,6 +5,9 @@ import com.puretv.twitch.core.model.StreamToken
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.request.header
+import io.ktor.client.statement.HttpResponse
+import io.ktor.client.statement.bodyAsText
+import io.ktor.http.HttpStatusCode
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.http.ContentType
@@ -14,6 +17,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
 
 /**
  * SECTION 03.4 [CRITICAL] — Helix does not expose a playable stream URL.
@@ -37,6 +41,13 @@ class TwitchGqlClient(
     // explicit nulls and rejects the query with "Expected type X!, found null".
     private val json: Json = Json { ignoreUnknownKeys = true; encodeDefaults = true },
 ) {
+    // `currentUser.viewedVideos` is a private Twitch web-client field. When a
+    // third-party OAuth token gets a successful response with currentUser=null,
+    // retries with that same token cannot make the field available. Remember
+    // that response for this process so periodic home refreshes and player
+    // checkpoint writes do not keep hitting the same unsupported path. A newly
+    // refreshed token gets one fresh attempt.
+    @Volatile private var resumeHistoryUnavailableToken: String? = null
 
     /**
      * @param playerType the GQL `playerType` Twitch fingerprints for ad targeting.
@@ -53,7 +64,7 @@ class TwitchGqlClient(
         val response = postPlaybackAccessToken(
             variables = PlaybackAccessTokenVariables(login = channelLogin, playerType = playerType),
             oauthToken = oauthToken,
-        )
+        ).bodyAsText()
 
         val payload = json.decodeFromString<GqlEnvelope<PlaybackAccessTokenData>>(response)
         val token = payload.data?.streamPlaybackAccessToken
@@ -70,14 +81,147 @@ class TwitchGqlClient(
 
     /** Fetch a playback token for a VOD instead of a live channel. */
     suspend fun fetchVodToken(vodId: String, oauthToken: String?): StreamToken {
-        val response = postPlaybackAccessToken(
+        var response = postPlaybackAccessToken(
             variables = PlaybackAccessTokenVariables(login = "", isLive = false, isVod = true, vodID = vodId),
             oauthToken = oauthToken,
         )
-        val payload = json.decodeFromString<GqlEnvelope<PlaybackAccessTokenData>>(response)
+        if (oauthToken != null && response.status == HttpStatusCode.Unauthorized) {
+            // Expired TV OAuth sessions currently become a {status,message} 401
+            // body. The old helper discarded the status, decoded that body as a
+            // GraphQL envelope, and misleadingly reported "no token"—leaving a
+            // black player. Public VODs do not need OAuth to mint a playback
+            // token, so retry anonymously; account-only VODs still fail closed.
+            response.bodyAsText()
+            response = postPlaybackAccessToken(
+                variables = PlaybackAccessTokenVariables(login = "", isLive = false, isVod = true, vodID = vodId),
+                oauthToken = null,
+            )
+        }
+        val responseText = response.bodyAsText()
+        val payload = json.decodeFromString<GqlEnvelope<PlaybackAccessTokenData>>(responseText)
         val token = payload.data?.videoPlaybackAccessToken
-            ?: throw GqlPlaybackTokenException("VOD PlaybackAccessToken returned no token")
+            ?: throw GqlPlaybackTokenException(
+                "VOD PlaybackAccessToken returned no token (HTTP ${response.status.value})",
+            )
         return StreamToken(value = token.value, signature = token.signature)
+    }
+
+    /**
+     * Read the signed-in viewer's Twitch-saved resume point for a VOD.
+     *
+     * Twitch exposes this through its private `currentUser.viewedVideos` GQL
+     * field, not the public Helix API. Keep this best-effort: missing auth,
+     * schema changes, and request failures all return null so callers can use
+     * their local playback position.
+     */
+    suspend fun fetchVodPlaybackPosition(vodId: String, oauthToken: String?): Long? {
+        return fetchVodPlaybackPositions(oauthToken).getOrNull()?.get(vodId)
+    }
+
+    /** Best-effort account-synced positions for the viewer's recent VODs, in milliseconds. */
+    suspend fun fetchVodPlaybackPositions(oauthToken: String?): Result<Map<String, Long>> =
+        lookupVodPlaybackHistory(oauthToken).map { it.positions }
+
+    /** Best-effort write of the authenticated viewer's VOD resume point, in seconds. */
+    suspend fun updateVodPlaybackPosition(
+        vodId: String,
+        userId: String,
+        positionSeconds: Long,
+        oauthToken: String?,
+    ): Boolean {
+        if (vodId.isBlank() || vodId.any { !it.isDigit() } ||
+            (userId.isNotBlank() && userId.any { !it.isDigit() }) || oauthToken.isNullOrBlank()
+        ) return false
+
+        // Keep Twitch's account resume point monotonic from this client's point
+        // of view. A backward seek or stale local checkpoint must not replace a
+        // newer Twitch position. Fail closed if the private lookup is unavailable.
+        val currentHistory = lookupVodPlaybackHistory(oauthToken).getOrNull() ?: return false
+        val nextPositionSeconds = positionSeconds.coerceIn(0L, Int.MAX_VALUE.toLong())
+        val savedPositionSeconds = currentHistory.positions[vodId]?.div(1_000L)
+        if (savedPositionSeconds != null && nextPositionSeconds < savedPositionSeconds) return false
+        val viewerId = currentHistory.userId?.takeIf { id -> id.isNotBlank() && id.all(Char::isDigit) }
+            ?: userId.takeIf { id -> id.isNotBlank() && id.all(Char::isDigit) }
+            ?: return false
+
+        val requestBody = json.encodeToString(
+            UpdateViewedVideoRequest(
+                operationName = "UpdateUserViewedVideo",
+                query = UPDATE_USER_VIEWED_VIDEO_MUTATION,
+                variables = UpdateViewedVideoVariables(
+                    input = UpdateViewedVideoInput(
+                        userID = viewerId,
+                        position = nextPositionSeconds.toInt(),
+                        videoID = vodId,
+                        videoType = "VOD",
+                    ),
+                ),
+            ),
+        )
+        return try {
+            val response = httpClient.post(TwitchConfig.GQL_ENDPOINT) {
+                // Twitch's private GraphQL endpoint rejects this app's client ID.
+                header("Client-ID", TwitchConfig.GQL_CLIENT_ID)
+                header("Authorization", "OAuth $oauthToken")
+                contentType(ContentType.Application.Json)
+                setBody(requestBody)
+            }.body<String>()
+            json.decodeFromString<GqlEnvelope<UpdateViewedVideoData>>(response)
+                .data?.updateUserViewedVideo != null
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private suspend fun lookupVodPlaybackHistory(oauthToken: String?): Result<ResumeWatchingHistory> {
+        if (oauthToken.isNullOrBlank()) {
+            return Result.failure(IllegalArgumentException("An OAuth token is required"))
+        }
+        if (resumeHistoryUnavailableToken == oauthToken) {
+            return Result.failure(TwitchResumeHistoryUnavailableException())
+        }
+
+        val requestBody = json.encodeToString(
+            ResumeWatchingQueryRequest(
+                operationName = "ResumeWatchingVideosQuery",
+                query = RESUME_WATCHING_VIDEOS_QUERY,
+                variables = ResumeWatchingQueryVariables(limit = RESUME_WATCHING_VIDEO_LIMIT),
+            ),
+        )
+        return try {
+            val response = httpClient.post(TwitchConfig.GQL_ENDPOINT) {
+                header("Client-ID", TwitchConfig.GQL_CLIENT_ID)
+                header("Authorization", "OAuth $oauthToken")
+                contentType(ContentType.Application.Json)
+                setBody(requestBody)
+            }.body<String>()
+            val payload = json.decodeFromString<ResumeWatchingEnvelope>(response)
+            if (payload.errors.isNotEmpty()) {
+                val errorSummary = payload.errors.take(3).joinToString()
+                return Result.failure(IllegalStateException("Twitch rejected the resume-position lookup: $errorSummary"))
+            }
+            val currentUser = payload.data?.currentUser
+                ?: return Result.failure(
+                    TwitchResumeHistoryUnavailableException().also {
+                        resumeHistoryUnavailableToken = oauthToken
+                    },
+                )
+            val viewedVideos = currentUser.viewedVideos
+                ?: return Result.failure(IllegalStateException("Twitch did not return viewed VOD history"))
+            val positions = viewedVideos.edges.mapNotNull { edge ->
+                val id = edge.node?.id?.takeIf(String::isNotBlank) ?: return@mapNotNull null
+                val positionMs = edge.history?.position?.coerceAtLeast(0L)?.times(1_000L)
+                    ?: return@mapNotNull null
+                id to positionMs
+            }.toMap()
+            Result.success(ResumeWatchingHistory(currentUser.id, positions))
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            Result.failure(error)
+        }
     }
 
     /** Fetch a VOD's storyboard JSON URL (seekPreviewsURL), or null if it has none. */
@@ -134,15 +278,19 @@ class TwitchGqlClient(
     private suspend fun postPlaybackAccessToken(
         variables: PlaybackAccessTokenVariables,
         oauthToken: String?,
-    ): String = httpClient.post(TwitchConfig.GQL_ENDPOINT) {
+    ): HttpResponse = httpClient.post(TwitchConfig.GQL_ENDPOINT) {
         header("Client-ID", TwitchConfig.GQL_CLIENT_ID)
         oauthToken?.let { header("Authorization", "OAuth $it") }
         contentType(ContentType.Application.Json)
         setBody(buildPlaybackAccessTokenBody(variables, json))
-    }.body()
+    }
 }
 
 class GqlPlaybackTokenException(message: String) : Exception(message)
+
+/** Twitch accepted the private GQL request but did not expose account history. */
+class TwitchResumeHistoryUnavailableException :
+    Exception("Twitch's private resume-history field isn't available to this client.")
 
 /**
  * The FULL inline PlaybackAccessToken GraphQL operation (the same one Twitch's
@@ -156,6 +304,84 @@ internal const val PLAYBACK_ACCESS_TOKEN_QUERY =
     "query PlaybackAccessToken_Template(\$login: String!, \$isLive: Boolean!, \$vodID: ID!, \$isVod: Boolean!, \$playerType: String!) { " +
         "streamPlaybackAccessToken(channelName: \$login, params: {platform: \"web\", playerBackend: \"mediaplayer\", playerType: \$playerType}) @include(if: \$isLive) { value signature __typename } " +
         "videoPlaybackAccessToken(id: \$vodID, params: {platform: \"web\", playerBackend: \"mediaplayer\", playerType: \$playerType}) @include(if: \$isVod) { value signature __typename } }"
+
+private const val RESUME_WATCHING_VIDEO_LIMIT = 100
+
+private const val RESUME_WATCHING_VIDEOS_QUERY =
+    "query ResumeWatchingVideosQuery(\$limit: Int!) { " +
+        "currentUser { id viewedVideos(first: \$limit) { " +
+        "edges { history { position } node { id } } } } }"
+
+private const val UPDATE_USER_VIEWED_VIDEO_MUTATION =
+    "mutation UpdateUserViewedVideo(\$input: UpdateUserViewedVideoInput!) { " +
+        "updateUserViewedVideo(input: \$input) { __typename } }"
+
+@Serializable
+private data class UpdateViewedVideoRequest(
+    val operationName: String,
+    val query: String,
+    val variables: UpdateViewedVideoVariables,
+)
+
+@Serializable
+private data class UpdateViewedVideoVariables(val input: UpdateViewedVideoInput)
+
+@Serializable
+private data class UpdateViewedVideoInput(
+    val userID: String,
+    val position: Int,
+    val videoID: String,
+    val videoType: String,
+)
+
+@Serializable
+private data class UpdateViewedVideoData(
+    val updateUserViewedVideo: UpdateViewedVideoPayload? = null,
+)
+
+@Serializable
+private data class UpdateViewedVideoPayload(
+    @SerialName("__typename") val typeName: String? = null,
+)
+
+@Serializable
+private data class ResumeWatchingQueryRequest(
+    val operationName: String,
+    val query: String,
+    val variables: ResumeWatchingQueryVariables,
+)
+
+@Serializable
+private data class ResumeWatchingEnvelope(
+    val data: ResumeWatchingData? = null,
+    val errors: List<JsonElement> = emptyList(),
+)
+
+@Serializable
+private data class ResumeWatchingQueryVariables(val limit: Int)
+
+@Serializable
+private data class ResumeWatchingData(val currentUser: ResumeWatchingUser? = null)
+
+@Serializable
+private data class ResumeWatchingUser(val id: String? = null, val viewedVideos: ViewedVideosConnection? = null)
+
+private data class ResumeWatchingHistory(val userId: String?, val positions: Map<String, Long>)
+
+@Serializable
+private data class ViewedVideosConnection(val edges: List<ViewedVideosEdge> = emptyList())
+
+@Serializable
+private data class ViewedVideosEdge(
+    val history: VideoViewingHistory? = null,
+    val node: ViewedVideo? = null,
+)
+
+@Serializable
+private data class VideoViewingHistory(val position: Long? = null)
+
+@Serializable
+private data class ViewedVideo(val id: String? = null)
 
 @Serializable
 internal data class GqlInlineQueryRequest(

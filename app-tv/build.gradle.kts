@@ -39,8 +39,8 @@ android {
         // versionCode is the monotonic value the in-app updater compares against
         // the published tv-version.json (see docs/tv-version.json). Bump it on
         // every TV release so the updater offers the new APK.
-        versionCode = 8
-        versionName = "1.2.4"
+        versionCode = 16
+        versionName = "1.3.2"
         ndk { abiFilters += listOf("armeabi-v7a", "arm64-v8a") }
     }
 
@@ -132,6 +132,8 @@ dependencies {
     implementation(libs.compose.tv.foundation)
     implementation(libs.compose.tv.material)
     implementation(libs.compose.ui)
+    implementation("androidx.compose.ui:ui-tooling-preview:1.7.0")
+    debugImplementation("androidx.compose.ui:ui-tooling:1.7.0")
     implementation(libs.compose.foundation)
     implementation(libs.compose.runtime)
     // Full Material icon set (Pause, Apps, Settings, etc.) used by the TV
@@ -155,6 +157,8 @@ dependencies {
     // (mirrors app-android / core's android target). Without it the app compiles
     // but crashes at first network call: no HttpClientEngine on the classpath.
     implementation(libs.ktor.client.okhttp)
+    implementation(libs.ktor.server.cio)
+    implementation(libs.kotlinx.serialization.json)
 
     implementation(libs.media3.exoplayer)
     implementation(libs.media3.exoplayer.hls)
@@ -172,6 +176,7 @@ dependencies {
 
     implementation(libs.coil.compose)
     implementation(libs.coil.network)
+    implementation(libs.coil.gif)
 
     // QR generation for the device-code login screen (encoder only, no Android
     // integration module needed; we render the BitMatrix to a Compose bitmap).

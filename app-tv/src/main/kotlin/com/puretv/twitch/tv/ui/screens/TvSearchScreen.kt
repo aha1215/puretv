@@ -49,6 +49,7 @@ import com.puretv.twitch.tv.ui.SearchViewModel
 import com.puretv.twitch.tv.ui.components.ExpressiveIcons
 import com.puretv.twitch.tv.ui.components.TvExpressiveIconButton
 import com.puretv.twitch.tv.ui.components.TvLivePill
+import com.puretv.twitch.tv.ui.components.TvPageTitle
 import com.puretv.twitch.tv.ui.components.tvFocusClickable
 import com.puretv.twitch.tv.ui.theme.PureTvTvMotion
 import com.puretv.twitch.tv.ui.theme.PureTvTvTheme
@@ -93,12 +94,12 @@ fun TvSearchScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(c.surface)
-            .padding(48.dp),
-        verticalArrangement = Arrangement.spacedBy(28.dp),
+            .padding(32.dp),
+        verticalArrangement = Arrangement.spacedBy(20.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(20.dp)) {
             TvExpressiveIconButton(icon = ExpressiveIcons.Back, contentDescription = "Back", onClick = onBack)
-            Text(text = "Search", style = MaterialTheme.typography.displayMedium, color = c.onSurface)
+            TvPageTitle("Search")
         }
 
         TvSearchField(

@@ -1,8 +1,8 @@
 package com.puretv.twitch.tv.ui.components
 
-import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -20,7 +20,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
@@ -31,7 +30,7 @@ import androidx.tv.material3.Text
 import com.puretv.twitch.tv.ui.theme.PureTvTvTheme
 
 enum class TvNavDestination(val label: String, val icon: ImageVector, val outlineIcon: ImageVector) {
-    HOME("Live Channels", ExpressiveIcons.Home, ExpressiveIcons.HomeOutlined),
+    HOME("Home", ExpressiveIcons.Home, ExpressiveIcons.HomeOutlined),
     FOLLOWING("Following", ExpressiveIcons.Following, ExpressiveIcons.FollowingOutlined),
     BROWSE("Categories", ExpressiveIcons.Browse, ExpressiveIcons.BrowseOutlined),
     SEARCH("Search", ExpressiveIcons.Search, ExpressiveIcons.SearchOutlined),
@@ -62,22 +61,17 @@ fun TvNavDrawer(
     onSelect: (TvNavDestination) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    var expanded by remember { mutableStateOf(false) }
     val c = PureTvTvTheme.colors
     val shapes = PureTvTvTheme.shapes
 
     Column(
         modifier = modifier
             .fillMaxHeight()
-            .width(if (expanded) 240.dp else 88.dp)
-            .animateContentSize()
+            .width(128.dp)
             .clip(shapes.paneShape)
             .background(c.surfaceContainer)
-            // hasFocus is true while any child row holds focus, so the rail expands
-            // on entry and collapses to icons the moment focus leaves it.
-            .onFocusChanged { expanded = it.hasFocus }
-            .padding(vertical = 24.dp, horizontal = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+            .padding(vertical = 12.dp, horizontal = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         val destinations = TvNavDestination.entries.filter { it != TvNavDestination.ACCOUNT || !isLoggedIn }
 
@@ -85,38 +79,45 @@ fun TvNavDrawer(
             val isSelected = dest == selected
             val label = if (dest == TvNavDestination.ACCOUNT && !isLoggedIn) "Sign in" else dest.label
             val interaction = remember { MutableInteractionSource() }
+            val focused by interaction.collectIsFocusedAsState()
 
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(16.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(56.dp)
+                    .height(48.dp)
                     .tvFocusClickable(
                         interaction = interaction,
                         onClick = { onSelect(dest) },
                         restRadius = 28.dp,
                         focusRadius = shapes.pillFocus,
-                        color = if (isSelected) c.secondaryContainer else Color.Transparent,
-                        focusColor = if (isSelected) c.secondaryContainer else c.surfaceHigh,
+                        color = if (isSelected) c.surfaceHigh else Color.Transparent,
+                        focusColor = c.primary,
                     )
-                    .padding(horizontal = 14.dp),
+                    .padding(horizontal = 10.dp),
             ) {
                 Icon(
                     imageVector = if (isSelected) dest.icon else dest.outlineIcon,
                     contentDescription = label,
-                    tint = if (isSelected) c.onSecondaryContainer else c.onSurfaceVariant,
-                    modifier = Modifier.size(26.dp),
+                    tint = when {
+                        focused -> c.onPrimary
+                        isSelected -> c.primary
+                        else -> c.onSurfaceVariant
+                    },
+                    modifier = Modifier.size(22.dp),
                 )
-                if (expanded) {
-                    Text(
-                        text = label,
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                        color = if (isSelected) c.onSecondaryContainer else c.onSurfaceVariant,
-                        maxLines = 1,
-                    )
-                }
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                    color = when {
+                        focused -> c.onPrimary
+                        isSelected -> c.onSurface
+                        else -> c.onSurfaceVariant
+                    },
+                    maxLines = 1,
+                )
             }
         }
     }

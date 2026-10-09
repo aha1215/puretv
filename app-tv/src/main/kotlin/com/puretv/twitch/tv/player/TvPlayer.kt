@@ -1,17 +1,22 @@
 package com.puretv.twitch.tv.player
 
 import android.content.Context
+import android.net.Uri
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.okhttp.OkHttpDataSource
+import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultLivePlaybackSpeedControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import com.puretv.twitch.core.adblock.AdBlockEngine
 import com.puretv.twitch.core.adblock.AdMarkers
 import com.puretv.twitch.core.adblock.AdSimulator
@@ -56,6 +61,7 @@ class TvPlayer(
      * handing out a released (unusable) instance.
      */
     private var _exoPlayer: ExoPlayer? = null
+    private var externalSubtitleListener: Player.Listener? = null
 
     val exoPlayer: ExoPlayer
         get() = _exoPlayer ?: buildPlayer().also { _exoPlayer = it }
@@ -63,7 +69,14 @@ class TvPlayer(
     private fun buildPlayer(): ExoPlayer = ExoPlayer.Builder(context)
         .setMediaSourceFactory(
             DefaultMediaSourceFactory(context)
-                .setDataSourceFactory(OkHttpDataSource.Factory(okHttpClient)),
+                // DefaultDataSource delegates HTTP(S) to the existing OkHttp client
+                // (and ad-block interceptor) while supporting local content:// URIs.
+                .setDataSourceFactory(DefaultDataSource.Factory(context, OkHttpDataSource.Factory(okHttpClient))),
+        )
+        .setTrackSelector(
+            DefaultTrackSelector(context).apply {
+                setParameters(buildUponParameters().setSelectUndeterminedTextLanguage(true))
+            },
         )
         // Request audio focus so another media app / a phone call ducks or pauses
         // us instead of being talked over, and pause when audio output goes away.
@@ -146,6 +159,73 @@ class TvPlayer(
         }
     }
 
+    /** Play an archive URL and optionally attach a local SRT document. */
+    fun playVod(url: String, subtitleUri: Uri? = null, startPositionMs: Long = 0L) {
+        errorRetries = 0
+        setQuality(StreamQuality.AUTO)
+        val item = mediaItem(url, subtitleUri)
+        with(exoPlayer) {
+            setMediaItem(item, startPositionMs.coerceAtLeast(0L))
+            prepare()
+            play()
+        }
+    }
+
+    /** Replace the current VOD item while preserving position, pause state and track caps. */
+    fun setExternalSubtitle(uri: Uri?) {
+        val player = exoPlayer
+        val current = player.currentMediaItem ?: return
+        externalSubtitleListener?.let(player::removeListener)
+        externalSubtitleListener = null
+        val position = player.currentPosition.coerceAtLeast(0L)
+        val wasPlaying = player.playWhenReady
+        val tracks = player.trackSelectionParameters
+        player.setMediaItem(mediaItem(current.localConfiguration?.uri?.toString() ?: return, uri), position)
+        player.trackSelectionParameters = tracks.buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false).build()
+        if (uri != null) {
+            // Explicitly select the external subtitle track once Media3 has parsed
+            // it. Some TV track selectors leave an undetermined-language SRT
+            // unselected even when the configuration carries DEFAULT.
+            val listener = object : Player.Listener {
+                override fun onTracksChanged(tracks: Tracks) {
+                    val textGroup = tracks.groups.firstOrNull { group ->
+                        group.type == C.TRACK_TYPE_TEXT && (0 until group.length).any(group::isTrackSupported)
+                    } ?: return
+                    val trackIndex = (0 until textGroup.length).firstOrNull(textGroup::isTrackSupported) ?: return
+                    externalSubtitleListener = null
+                    player.removeListener(this)
+                    player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+                        .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                        .setOverrideForType(
+                            androidx.media3.common.TrackSelectionOverride(textGroup.mediaTrackGroup, listOf(trackIndex)),
+                        )
+                        .build()
+                }
+            }
+            externalSubtitleListener = listener
+            player.addListener(listener)
+        }
+        player.prepare()
+        player.playWhenReady = wasPlaying
+    }
+
+    private fun mediaItem(url: String, subtitleUri: Uri?): MediaItem {
+        val builder = MediaItem.Builder().setUri(url)
+        if (subtitleUri != null) {
+            builder.setSubtitleConfigurations(
+                listOf(
+                    MediaItem.SubtitleConfiguration.Builder(subtitleUri)
+                        .setMimeType(MimeTypes.APPLICATION_SUBRIP)
+                        .setLabel("External subtitles")
+                        .setLanguage("und")
+                        .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
+                        .build(),
+                ),
+            )
+        }
+        return builder.build()
+    }
+
     fun togglePlayPause() {
         if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
     }
@@ -177,6 +257,8 @@ class TvPlayer(
      */
     fun stop() {
         _exoPlayer?.run {
+            externalSubtitleListener?.let(::removeListener)
+            externalSubtitleListener = null
             stop()
             clearMediaItems()
         }
@@ -188,6 +270,8 @@ class TvPlayer(
      * never touches a released player.
      */
     fun release() {
+        externalSubtitleListener?.let { listener -> _exoPlayer?.removeListener(listener) }
+        externalSubtitleListener = null
         _exoPlayer?.release()
         _exoPlayer = null
         errorRetries = 0

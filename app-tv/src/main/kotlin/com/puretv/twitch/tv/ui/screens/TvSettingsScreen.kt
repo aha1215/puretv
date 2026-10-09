@@ -2,15 +2,18 @@ package com.puretv.twitch.tv.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -20,12 +23,18 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Icon
 import androidx.tv.material3.MaterialTheme
@@ -34,10 +43,12 @@ import androidx.tv.material3.Text
 import com.puretv.twitch.core.adblock.AdBlockStrategy
 import com.puretv.twitch.core.model.StreamQuality
 import com.puretv.twitch.tv.data.AppSettingsStore
+import com.puretv.twitch.tv.data.BrowserVodSyncServer
 import com.puretv.twitch.tv.ui.SettingsViewModel
 import com.puretv.twitch.tv.ui.components.ExpressiveIcons
 import com.puretv.twitch.tv.ui.components.TvButtonStyle
 import com.puretv.twitch.tv.ui.components.TvDivider
+import com.puretv.twitch.tv.ui.components.TvChatStylePreview
 import com.puretv.twitch.tv.ui.components.TvExpressiveButton
 import com.puretv.twitch.tv.ui.components.TvExpressiveIconButton
 import com.puretv.twitch.tv.ui.components.TvFilterChip
@@ -57,9 +68,8 @@ import org.koin.compose.koinInject
 /**
  * SECTION 07.2 / 10.4: focusable settings rows mirroring the phone app's
  * `SettingsScreen` content (colour, preferred quality, ad-block
- * toggle/strategy, account/sign-out, software update) but laid out as a
- * single D-pad-navigable column of [TvPanel]s rather than scrollable
- * Material3 list items, per the 10-foot pattern used throughout `app-tv`.
+ * toggle/strategy, account/sign-out, software update) organized into short,
+ * remote-selectable categories so focus and scroll state remain local.
  *
  * There is no shape-intensity control here: TV's theme exposes no shape
  * dial, and dialing corner roundness with a remote is not a meaningful
@@ -71,6 +81,8 @@ fun TvSettingsScreen(onBack: () -> Unit, viewModel: SettingsViewModel = koinView
     val updateManager = koinInject<TvUpdateManager>()
     val updateState by updateManager.state.collectAsState()
     val c = PureTvTvTheme.colors
+    var selectedCategory by rememberSaveable { mutableStateOf(TvSettingsCategory.APPEARANCE) }
+    val categoryStateHolder = rememberSaveableStateHolder()
 
     // The colour picker writes straight to the store: it's a pure presentation
     // setting with no ViewModel-side validation, same class of write as
@@ -78,63 +90,369 @@ fun TvSettingsScreen(onBack: () -> Unit, viewModel: SettingsViewModel = koinView
     // method (mirrors desktop's SettingsContent.kt ColourPanel).
     val settingsStore = koinInject<AppSettingsStore>()
     val scope = rememberCoroutineScope()
+    val webResumeSessionLinked by settingsStore.webResumeSessionLinked.collectAsState()
+    val pendingWebResumeLink by settingsStore.pendingWebResumeLink.collectAsState()
+    val chatAppearance by settingsStore.chatAppearance.collectAsState(initial = AppSettingsStore.ChatAppearance())
+    val chatTranslation by settingsStore.chatTranslation.collectAsState(initial = AppSettingsStore.ChatTranslation())
+    val vodSeekProfile by settingsStore.vodSeekProfile.collectAsState(initial = AppSettingsStore.VodSeekProfile.Standard)
+    val browserVodSync by settingsStore.browserVodSync.collectAsState(initial = AppSettingsStore.BrowserVodSync())
+    val browserSyncServer = koinInject<BrowserVodSyncServer>()
+    val browserSyncStatus by browserSyncServer.status.collectAsState()
+    val browserSyncAddresses = remember(browserVodSync.enabled, browserSyncStatus.running) {
+        if (browserVodSync.enabled) browserSyncServer.localIpv4Addresses() else emptyList()
+    }
 
-    Column(
+    Row(Modifier.fillMaxSize().background(c.surface)) {
+        Column(
+            modifier = Modifier
+                .fillMaxHeight()
+                .width(216.dp)
+                .background(c.surfaceLow)
+                .padding(horizontal = 14.dp, vertical = 20.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.padding(bottom = 12.dp),
+            ) {
+                TvExpressiveIconButton(
+                    icon = ExpressiveIcons.Back,
+                    contentDescription = "Back",
+                    onClick = onBack,
+                    boxSize = 48.dp,
+                    iconSize = 22.dp,
+                )
+                Text("Settings", style = MaterialTheme.typography.titleLarge, color = c.onSurface)
+            }
+            TvSettingsCategory.entries.forEach { category ->
+                SettingsCategoryButton(
+                    category = category,
+                    selected = category == selectedCategory,
+                    onClick = { selectedCategory = category },
+                )
+            }
+        }
+
+        androidx.compose.foundation.layout.Box(
+            Modifier.fillMaxHeight().width(1.dp).background(c.outlineVariant.copy(alpha = 0.55f)),
+        )
+
+        categoryStateHolder.SaveableStateProvider(selectedCategory.name) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(start = 28.dp, top = 24.dp, end = 32.dp, bottom = 28.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    TvPageTitle(selectedCategory.title)
+                    Text(selectedCategory.description, style = MaterialTheme.typography.bodyMedium, color = c.onSurfaceVariant)
+                }
+
+                when (selectedCategory) {
+                    TvSettingsCategory.APPEARANCE -> TvPanel(padding = 24.dp) {
+                        ColourSection(
+                            currentVariant = ThemeVariant.fromKey(state.settings.theme),
+                            onSelect = { variant -> scope.launch { settingsStore.update { it.copy(theme = variant.key) } } },
+                        )
+                    }
+                    TvSettingsCategory.PLAYBACK -> {
+                        TvPanel(padding = 24.dp) {
+                            StreamQualitySection(
+                                selected = state.settings.preferredQuality,
+                                onSelect = viewModel::setPreferredQuality,
+                            )
+                        }
+                        TvPanel(padding = 24.dp) {
+                            VodSeekSection(
+                                selected = vodSeekProfile,
+                                onSelect = { profile -> scope.launch { settingsStore.saveVodSeekProfile(profile) } },
+                            )
+                        }
+                    }
+                    TvSettingsCategory.CHAT -> TvPanel(padding = 20.dp) {
+                        ChatAppearanceSection(
+                            settings = state.settings,
+                            appearance = chatAppearance,
+                            translation = chatTranslation,
+                            onFontSize = { size -> scope.launch { settingsStore.update { it.copy(chatFontSize = size) } } },
+                            onProviderChange = { update -> scope.launch { settingsStore.update(update) } },
+                            onAppearanceChange = { update -> scope.launch { settingsStore.updateChatAppearance(update) } },
+                            onTranslationChange = { update -> scope.launch { settingsStore.updateChatTranslation(update) } },
+                        )
+                    }
+                    TvSettingsCategory.NETWORK -> {
+                        TvPanel(padding = 24.dp) {
+                            AdBlockSection(
+                                enabled = state.settings.adBlockEnabled,
+                                onEnabledChange = viewModel::setAdBlockEnabled,
+                                strategyKey = state.settings.adBlockStrategy,
+                                onStrategySelect = viewModel::setAdBlockStrategy,
+                            )
+                        }
+                        TvPanel(padding = 24.dp) {
+                            BrowserVodSyncSection(
+                                settings = browserVodSync,
+                                webResumeSessionLinked = webResumeSessionLinked,
+                                pendingWebResumeLink = pendingWebResumeLink,
+                                status = browserSyncStatus,
+                                addresses = browserSyncAddresses,
+                                onEnabledChange = { enabled -> scope.launch { settingsStore.setBrowserVodSyncEnabled(enabled) } },
+                                onRotateCode = { scope.launch { settingsStore.setBrowserVodSyncEnabled(true, rotateCode = true) } },
+                                onForgetWebSession = settingsStore::clearWebResumeToken,
+                                onCreateWebLinkCode = { settingsStore.createWebResumeLinkCode() },
+                            )
+                        }
+                    }
+                    TvSettingsCategory.ACCOUNT -> {
+                        TvPanel(padding = 24.dp) {
+                            AccountSection(
+                                isLoggedIn = state.isLoggedIn,
+                                username = state.loginUsername,
+                                onLogOut = viewModel::logOut,
+                            )
+                        }
+                        TvPanel(padding = 24.dp) {
+                            SoftwareUpdateSection(
+                                currentVersion = updateManager.currentVersionName,
+                                state = updateState,
+                                onCheck = { updateManager.checkForUpdates(force = true) },
+                                onInstall = { info -> updateManager.downloadAndInstall(info) },
+                                onGrantConsent = { updateManager.openInstallSettings() },
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private enum class TvSettingsCategory(
+    val title: String,
+    val description: String,
+    val icon: ImageVector,
+) {
+    APPEARANCE("Appearance", "Choose the app palette.", ExpressiveIcons.Settings),
+    PLAYBACK("Playback", "Stream quality and VOD seeking.", ExpressiveIcons.Play),
+    CHAT("Chat", "Overlay, translation, and message style.", ExpressiveIcons.Chat),
+    NETWORK("Network & Ads", "Ad blocking and browser resume sync.", ExpressiveIcons.Shield),
+    ACCOUNT("Account & Updates", "Twitch account and app version.", ExpressiveIcons.Account),
+}
+
+@Composable
+private fun SettingsCategoryButton(
+    category: TvSettingsCategory,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    val c = PureTvTvTheme.colors
+    val interaction = remember(category) { MutableInteractionSource() }
+    val focused by interaction.collectIsFocusedAsState()
+    Row(
         modifier = Modifier
-            .fillMaxSize()
-            .background(c.surface)
-            .verticalScroll(rememberScrollState())
-            .padding(48.dp),
-        verticalArrangement = Arrangement.spacedBy(24.dp),
+            .fillMaxWidth()
+            .height(48.dp)
+            .tvFocusClickable(
+                interaction = interaction,
+                onClick = onClick,
+                restRadius = 14.dp,
+                focusRadius = 16.dp,
+                color = if (selected) c.surfaceHigh else Color.Transparent,
+                focusColor = c.primary,
+                scale = 1f,
+            )
+            .padding(horizontal = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(20.dp)) {
-            TvExpressiveIconButton(icon = ExpressiveIcons.Back, contentDescription = "Back", onClick = onBack)
-            TvPageTitle("Settings")
-        }
+        Icon(
+            category.icon,
+            contentDescription = null,
+            tint = when {
+                focused -> c.onPrimary
+                selected -> c.primary
+                else -> c.onSurfaceVariant
+            },
+            modifier = Modifier.size(20.dp),
+        )
+        Text(
+            category.title,
+            style = MaterialTheme.typography.labelLarge,
+            color = when {
+                focused -> c.onPrimary
+                selected -> c.onSurface
+                else -> c.onSurfaceVariant
+            },
+            maxLines = 1,
+        )
+    }
+}
 
-        TvPanel {
-            ColourSection(
-                currentVariant = ThemeVariant.fromKey(state.settings.theme),
-                onSelect = { variant -> scope.launch { settingsStore.update { it.copy(theme = variant.key) } } },
+@Composable
+private fun ChatAppearanceSection(
+    settings: com.puretv.twitch.core.model.AppSettings,
+    appearance: AppSettingsStore.ChatAppearance,
+    translation: AppSettingsStore.ChatTranslation,
+    onFontSize: (Float) -> Unit,
+    onProviderChange: ((com.puretv.twitch.core.model.AppSettings) -> com.puretv.twitch.core.model.AppSettings) -> Unit,
+    onAppearanceChange: ((AppSettingsStore.ChatAppearance) -> AppSettingsStore.ChatAppearance) -> Unit,
+    onTranslationChange: ((AppSettingsStore.ChatTranslation) -> AppSettingsStore.ChatTranslation) -> Unit,
+) {
+    val c = PureTvTvTheme.colors
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Text("Chat overlay", style = MaterialTheme.typography.titleLarge, color = c.onSurface)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(24.dp),
+            verticalAlignment = Alignment.Top,
+        ) {
+            TvChatStylePreview(
+                settings = settings,
+                appearance = appearance,
+                modifier = Modifier.weight(1.05f).height(280.dp),
             )
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    verticalAlignment = Alignment.Top,
+                ) {
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        ChatOptionGroup(
+                            "Font size",
+                            settings.chatFontSize.toString(),
+                            listOf("8.0" to "8 sp", "9.0" to "9 sp", "10.0" to "10 sp", "12.0" to "12 sp", "14.0" to "14 sp"),
+                        ) { onFontSize(it.toFloat()) }
+                        ChatOptionGroup(
+                            "Font family",
+                            appearance.fontFamily,
+                            listOf("sans" to "Sans", "serif" to "Serif", "mono" to "Mono"),
+                        ) { value -> onAppearanceChange { it.copy(fontFamily = value) } }
+                        ChatOptionGroup(
+                            "Message text",
+                            appearance.textColor,
+                            listOf("white" to "White", "warm" to "Warm", "yellow" to "Yellow"),
+                        ) { value -> onAppearanceChange { it.copy(textColor = value) } }
+                        ChatOptionGroup(
+                            "Text outline",
+                            appearance.outlineWidthDp.toString(),
+                            listOf("0.0" to "Off", "1.0" to "Thin", "1.5" to "Medium", "2.5" to "Strong"),
+                        ) { value -> onAppearanceChange { it.copy(outlineWidthDp = value.toFloat()) } }
+                    }
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        ChatOptionGroup(
+                            "Chat background",
+                            appearance.opacity.toString(),
+                            listOf("0.0" to "Clear", "0.1" to "10%", "0.2" to "20%", "0.35" to "35%", "0.5" to "50%", "1.0" to "Solid"),
+                        ) { value -> onAppearanceChange { it.copy(opacity = value.toFloat()) } }
+                        ChatOptionGroup(
+                            "Outline color",
+                            appearance.outlineColor,
+                            listOf("black" to "Black", "navy" to "Navy", "white" to "White"),
+                        ) { value -> onAppearanceChange { it.copy(outlineColor = value) } }
+                        ChatOptionGroup(
+                            "Username colors",
+                            if (appearance.useTwitchNameColors) "twitch" else "text",
+                            listOf("twitch" to "Twitch", "text" to "Match text"),
+                        ) { value -> onAppearanceChange { it.copy(useTwitchNameColors = value == "twitch") } }
+                        ChatOptionGroup(
+                            "Chat placement",
+                            appearance.side,
+                            listOf("right" to "Right", "left" to "Left"),
+                        ) { value -> onAppearanceChange { it.copy(side = value) } }
+                        ChatOptionGroup(
+                            "Message fade",
+                            appearance.fadeSeconds.toString(),
+                            listOf("0" to "Off", "10" to "10 sec", "30" to "30 sec", "60" to "60 sec"),
+                        ) { value -> onAppearanceChange { it.copy(fadeSeconds = value.toInt()) } }
+                        ChatOptionGroup(
+                            "Chat width",
+                            appearance.widthDp.toString(),
+                            listOf("280.0" to "Narrow", "360.0" to "Medium", "420.0" to "Wide", "480.0" to "Widest"),
+                        ) { value -> onAppearanceChange { it.copy(widthDp = value.toFloat()) } }
+                        ChatOptionGroup(
+                            "Translate chat",
+                            if (translation.enabled) "on" else "off",
+                            listOf("on" to "On", "off" to "Off"),
+                        ) { value -> onTranslationChange { it.copy(enabled = value == "on") } }
+                        ChatOptionGroup(
+                            "Translate to",
+                            translation.targetLanguage,
+                            listOf(
+                                "en" to "English", "es" to "Español", "fr" to "Français",
+                                "de" to "Deutsch", "ja" to "日本語", "ko" to "한국어",
+                                "pt" to "Português", "ru" to "Русский", "zh-CN" to "中文",
+                                "ar" to "العربية", "hi" to "हिन्दी",
+                            ),
+                        ) { value -> onTranslationChange { it.copy(targetLanguage = value) } }
+                        Text(
+                            "Foreign chat is detected automatically. Message text is sent to Google Translate.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = c.onSurfaceVariant,
+                        )
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text("Emote providers", style = MaterialTheme.typography.titleSmall, color = c.onSurfaceVariant)
+                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                listOf(
+                                    "7TV" to settings.show7tvEmotes,
+                                    "BTTV" to settings.showBttvEmotes,
+                                    "FFZ" to settings.showFfzEmotes,
+                                ).forEach { (label, selected) ->
+                                    TvFilterChip(label, selected, onClick = {
+                                        onProviderChange { current ->
+                                            when (label) {
+                                                "7TV" -> current.copy(show7tvEmotes = !current.show7tvEmotes)
+                                                "BTTV" -> current.copy(showBttvEmotes = !current.showBttvEmotes)
+                                                else -> current.copy(showFfzEmotes = !current.showFfzEmotes)
+                                            }
+                                        }
+                                    })
+                                }
+                            }
+                            Spacer(Modifier.height(5.dp))
+                            Text("Also show", style = MaterialTheme.typography.titleSmall, color = c.onSurfaceVariant)
+                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                TvFilterChip("Badges", settings.showBadges, onClick = {
+                                    onProviderChange { it.copy(showBadges = !it.showBadges) }
+                                })
+                                TvFilterChip("Timestamps", settings.chatTimestamps, onClick = {
+                                    onProviderChange { it.copy(chatTimestamps = !it.chatTimestamps) }
+                                })
+                            }
+                        }
+                    }
+                }
+            }
         }
-        TvDivider()
+    }
+}
 
-        TvPanel {
-            StreamQualitySection(
-                selected = state.settings.preferredQuality,
-                onSelect = viewModel::setPreferredQuality,
-            )
-        }
-        TvDivider()
-
-        TvPanel {
-            AdBlockSection(
-                enabled = state.settings.adBlockEnabled,
-                onEnabledChange = viewModel::setAdBlockEnabled,
-                strategyKey = state.settings.adBlockStrategy,
-                onStrategySelect = viewModel::setAdBlockStrategy,
-            )
-        }
-        TvDivider()
-
-        TvPanel {
-            AccountSection(
-                isLoggedIn = state.isLoggedIn,
-                username = state.loginUsername,
-                onLogOut = viewModel::logOut,
-            )
-        }
-        TvDivider()
-
-        TvPanel {
-            SoftwareUpdateSection(
-                currentVersion = updateManager.currentVersionName,
-                state = updateState,
-                onCheck = { updateManager.checkForUpdates(force = true) },
-                onInstall = { info -> updateManager.downloadAndInstall(info) },
-                onGrantConsent = { updateManager.openInstallSettings() },
-            )
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ChatOptionGroup(
+    label: String,
+    selected: String,
+    choices: List<Pair<String, String>>,
+    onSelect: (String) -> Unit,
+) {
+    val c = PureTvTvTheme.colors
+    Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+        Text(label, style = MaterialTheme.typography.titleSmall, color = c.onSurfaceVariant)
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            choices.forEach { (value, title) ->
+                TvFilterChip(title, selected == value, onClick = { onSelect(value) })
+            }
         }
     }
 }
@@ -186,9 +504,10 @@ private fun ColourSwatch(variant: ThemeVariant, selected: Boolean, onClick: () -
                 onClick = onClick,
                 restRadius = shapes.sm,
                 focusRadius = shapes.cardFocus,
-                color = if (selected) vc.primary else Color.Transparent,
+                color = if (selected) vc.surfaceHigh else Color.Transparent,
                 focusColor = vc.primary,
                 scale = 1.04f,
+                idleBorderColor = if (selected) vc.outline else Color.Transparent,
             )
             .padding(6.dp),
     ) {
@@ -239,6 +558,122 @@ private fun StreamQualitySection(selected: String, onSelect: (StreamQuality) -> 
                     onClick = { onSelect(quality) },
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun VodSeekSection(
+    selected: AppSettingsStore.VodSeekProfile,
+    onSelect: (AppSettingsStore.VodSeekProfile) -> Unit,
+) {
+    val c = PureTvTvTheme.colors
+    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        Text("VOD seeking", style = MaterialTheme.typography.titleLarge, color = c.onSurface)
+        Text(
+            "Press UP during playback to show the position. Hold LEFT or RIGHT to increase the jump size.",
+            style = MaterialTheme.typography.bodyLarge,
+            color = c.onSurfaceVariant,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            AppSettingsStore.VodSeekProfile.entries.forEach { profile ->
+                TvFilterChip(profile.label, selected == profile, onClick = { onSelect(profile) })
+            }
+        }
+    }
+}
+
+@Composable
+private fun BrowserVodSyncSection(
+    settings: AppSettingsStore.BrowserVodSync,
+    webResumeSessionLinked: Boolean,
+    pendingWebResumeLink: com.puretv.twitch.tv.data.SecureTokenStore.WebResumeLink?,
+    status: BrowserVodSyncServer.Status,
+    addresses: List<String>,
+    onEnabledChange: (Boolean) -> Unit,
+    onRotateCode: () -> Unit,
+    onForgetWebSession: () -> Unit,
+    onCreateWebLinkCode: () -> Unit,
+) {
+    val c = PureTvTvTheme.colors
+    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        Text("Desktop browser VOD resume", style = MaterialTheme.typography.titleLarge, color = c.onSurface)
+        Text(
+            "Pair the browser extension to sync the active VOD between this TV and your computer. " +
+                "Link the Twitch website session once from the extension so the TV can read and update Twitch resume history while your computer is off. " +
+                "The farther playback position wins.",
+            style = MaterialTheme.typography.bodyLarge,
+            color = c.onSurfaceVariant,
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text("Allow paired browser sync", style = MaterialTheme.typography.bodyLarge, color = c.onSurface)
+            Switch(checked = settings.enabled, onCheckedChange = onEnabledChange)
+        }
+        if (webResumeSessionLinked) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    "Twitch website session linked · TV resume works without the computer.",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = c.primary,
+                )
+                TvExpressiveButton(text = "Forget web session", onClick = onForgetWebSession, style = TvButtonStyle.Outlined)
+            }
+        }
+        if (settings.enabled) {
+            val statusText = when {
+                status.running -> "Receiver ready · ${status.receivedCount} position updates received"
+                status.error != null -> "Receiver unavailable: ${status.error}"
+                else -> "Starting receiver…"
+            }
+            Text(statusText, style = MaterialTheme.typography.bodyLarge, color = if (status.error == null) c.primary else c.error)
+            if (addresses.isEmpty()) {
+                Text("No Wi-Fi or Ethernet IPv4 address found. Connect the TV and computer to the same home network.",
+                    style = MaterialTheme.typography.bodyLarge, color = c.onSurfaceVariant)
+            } else {
+                Text("TV address: " + addresses.joinToString { "http://$it:47821" },
+                    style = PureTvTvType.data, color = c.onSurface)
+            }
+            Text("Pairing code: ${settings.pairingCode}",
+                style = MaterialTheme.typography.titleLarge, color = c.onSurface, fontFamily = FontFamily.Monospace)
+            if (!webResumeSessionLinked) {
+                Text(
+                    "Twitch website session not linked · the TV currently uses its local resume position.",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = c.onSurfaceVariant,
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                TvExpressiveButton(text = "Rotate pairing code", onClick = onRotateCode, style = TvButtonStyle.Outlined)
+                TvExpressiveButton(
+                    text = if (pendingWebResumeLink == null) "Create browser sign-in code" else "Refresh sign-in code",
+                    onClick = onCreateWebLinkCode,
+                    style = TvButtonStyle.Outlined,
+                )
+            }
+            if (pendingWebResumeLink != null) {
+                Text("10-character one-time code · expires in 15 minutes", style = MaterialTheme.typography.bodyLarge, color = c.onSurfaceVariant)
+                Text(
+                    pendingWebResumeLink.code,
+                    style = MaterialTheme.typography.headlineMedium,
+                    color = c.onSurface,
+                    fontFamily = FontFamily.Monospace,
+                )
+            }
+            Text(
+                "Install browser-extension/twitch-vod-sync, enter this TV address and the one-time code above, and choose Link Twitch website session once. " +
+                    "That action asks for browser cookie permission, encrypts the session for transfer over your local network, and saves it in Android encrypted storage. " +
+                    "The computer is not needed after linking. You can turn off paired browser sync afterward and keep direct TV resume.",
+                style = MaterialTheme.typography.bodyLarge,
+                color = c.onSurfaceVariant,
+            )
         }
     }
 }

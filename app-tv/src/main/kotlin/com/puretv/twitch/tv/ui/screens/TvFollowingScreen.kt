@@ -273,8 +273,8 @@ private fun LiveSection(
         TvSectionHeading("Live · ${rows.size}")
         FlowRow(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(24.dp),
-            verticalArrangement = Arrangement.spacedBy(24.dp),
+            horizontalArrangement = Arrangement.spacedBy(18.dp),
+            verticalArrangement = Arrangement.spacedBy(18.dp),
         ) {
             rows.forEachIndexed { index, row ->
                 TvFollowLiveCard(

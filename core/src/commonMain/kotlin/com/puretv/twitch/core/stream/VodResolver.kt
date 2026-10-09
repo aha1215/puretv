@@ -23,6 +23,21 @@ class VodResolver(
     suspend fun fetchToken(vodId: String, oauthToken: String? = null): StreamToken =
         gqlClient.fetchVodToken(vodId, oauthToken)
 
+    /** Best-effort account-synced VOD resume point, in milliseconds. */
+    suspend fun playbackPosition(vodId: String, oauthToken: String?): Long? =
+        gqlClient.fetchVodPlaybackPosition(vodId, oauthToken)
+
+    /** Best-effort account-synced positions for recent VODs, in milliseconds. */
+    suspend fun playbackPositions(oauthToken: String?): Result<Map<String, Long>> =
+        gqlClient.fetchVodPlaybackPositions(oauthToken)
+
+    suspend fun updatePlaybackPosition(
+        vodId: String,
+        userId: String,
+        positionSeconds: Long,
+        oauthToken: String?,
+    ): Boolean = gqlClient.updateVodPlaybackPosition(vodId, userId, positionSeconds, oauthToken)
+
     suspend fun resolveVodMasterPlaylist(vodId: String, oauthToken: String? = null): MasterPlaylistResult {
         val token = fetchToken(vodId, oauthToken)
         val url = buildVodMasterUrl(vodId, token)

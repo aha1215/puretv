@@ -40,6 +40,7 @@ import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import com.puretv.twitch.core.model.StreamQuality
 import com.puretv.twitch.tv.player.TvPlayer
+import com.puretv.twitch.tv.data.AppSettingsStore
 import com.puretv.twitch.tv.ui.StreamViewModel
 import com.puretv.twitch.tv.ui.components.TvChatOverlay
 import com.puretv.twitch.tv.ui.components.TvControlsOverlay
@@ -77,11 +78,15 @@ import org.koin.core.parameter.parametersOf
 fun TvStreamScreen(
     channelLogin: String,
     onBack: () -> Unit,
+    onOpenChannel: (String) -> Unit,
     viewModel: StreamViewModel = koinViewModel(parameters = { parametersOf(channelLogin) }),
 ) {
     val state by viewModel.state.collectAsState()
     val context = LocalContext.current
     val tvPlayer = koinInject<TvPlayer>()
+    val settingsStore = koinInject<AppSettingsStore>()
+    val appSettings by settingsStore.flow.collectAsState(initial = com.puretv.twitch.core.model.AppSettings())
+    val chatAppearance by settingsStore.chatAppearance.collectAsState(initial = AppSettingsStore.ChatAppearance())
     val rootFocusRequester = remember { FocusRequester() }
 
     var controlsVisible by remember { mutableStateOf(true) }
@@ -180,10 +185,10 @@ fun TvStreamScreen(
 
                 when (event.key) {
                     Key.DirectionRight -> {
-                        if (!chatVisible) { chatVisible = true; true } else false
+                        if (controlsVisible) false else if (!chatVisible) { chatVisible = true; true } else false
                     }
                     Key.DirectionLeft -> {
-                        if (chatVisible) { chatVisible = false; true } else false
+                        if (controlsVisible) false else if (chatVisible) { chatVisible = false; true } else false
                     }
                     Key.DirectionCenter, Key.Enter, Key.NumPadEnter, Key.MediaPlayPause -> {
                         // With no playable URL there is nothing to pause, so OK
@@ -243,7 +248,7 @@ fun TvStreamScreen(
         // only explanation of the failure away with it.
         if (state.playbackError != null) {
             Column(
-                modifier = Modifier.fillMaxSize().padding(48.dp),
+                modifier = Modifier.fillMaxSize().padding(32.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterVertically),
             ) {
@@ -270,6 +275,7 @@ fun TvStreamScreen(
             currentQuality = quality,
             adBlockStatus = state.adBlockStatus,
             onBack = onBack,
+            onOpenChannel = { onOpenChannel(channelLogin) },
             onTogglePlayPause = {
                 tvPlayer.togglePlayPause()
                 isPlaying = tvPlayer.exoPlayer.isPlaying
@@ -281,6 +287,8 @@ fun TvStreamScreen(
         TvChatOverlay(
             visible = chatVisible,
             messages = state.chatMessages,
+            appSettings = appSettings,
+            appearance = chatAppearance,
             modifier = Modifier.fillMaxSize(),
         )
     }
