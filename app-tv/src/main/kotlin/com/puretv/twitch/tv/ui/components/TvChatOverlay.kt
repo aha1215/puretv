@@ -225,6 +225,7 @@ private fun TvChatMessageRow(
     }
     val messageColor = configuredChatTextColor(appearance.textColor)
     val nameColor = if (appearance.useTwitchNameColors) twitchNameColor else messageColor
+    val emoteSizeSp = with(LocalDensity.current) { appearance.emoteSizeDp.dp.toSp().value }
     val timestamp = remember(message.timestamp) {
         runCatching {
             Instant.ofEpochMilli(message.timestamp).atZone(ZoneId.systemDefault()).format(ClockFormatter)
@@ -241,6 +242,7 @@ private fun TvChatMessageRow(
         appSettings.showBttvEmotes,
         appSettings.showFfzEmotes,
         appSettings.show7tvEmotes,
+        appearance.emoteSizeDp,
         nameColor,
         c.onSurfaceVariant,
         timestamp,
@@ -253,6 +255,7 @@ private fun TvChatMessageRow(
             timestampColor = c.onSurfaceVariant,
             timestamp = timestamp,
             imageLoader = imageLoader,
+            emoteSizeSp = emoteSizeSp,
         )
     }
 
@@ -265,6 +268,7 @@ private fun TvChatMessageRow(
             hasEmotes = message.parsedParts.any {
                 it is MessagePart.TwitchEmote || it is MessagePart.ThirdPartyEmote
             },
+            emoteSizeSp = emoteSizeSp,
         ),
         color = messageColor,
         appearance = appearance,
@@ -294,6 +298,7 @@ private fun buildTvChatBody(
     timestampColor: Color,
     timestamp: String,
     imageLoader: ImageLoader,
+    emoteSizeSp: Float,
 ): Pair<AnnotatedString, Map<String, InlineTextContent>> {
     val inline = LinkedHashMap<String, InlineTextContent>()
     val text = buildAnnotatedString {
@@ -346,6 +351,7 @@ private fun buildTvChatBody(
                                 overlays = emptyList(),
                                 inline = inline,
                                 imageLoader = imageLoader,
+                                emoteSizeSp = emoteSizeSp,
                             )
                             is MessagePart.ThirdPartyEmote -> {
                                 val enabled = when (emote.provider) {
@@ -361,6 +367,7 @@ private fun buildTvChatBody(
                                     overlays = emote.overlays,
                                     inline = inline,
                                     imageLoader = imageLoader,
+                                    emoteSizeSp = emoteSizeSp,
                                 ) else append(emote.name)
                             }
                             is MessagePart.Text -> append(token)
@@ -382,6 +389,7 @@ private fun buildTvChatBody(
                         overlays = emptyList(),
                         inline = inline,
                         imageLoader = imageLoader,
+                        emoteSizeSp = emoteSizeSp,
                     )
                     is MessagePart.ThirdPartyEmote -> {
                         val enabled = when (part.provider) {
@@ -397,6 +405,7 @@ private fun buildTvChatBody(
                             overlays = part.overlays,
                             inline = inline,
                             imageLoader = imageLoader,
+                            emoteSizeSp = emoteSizeSp,
                         ) else append(part.name)
                     }
                 }
@@ -427,10 +436,11 @@ private fun AnnotatedString.Builder.appendTvEmote(
     overlays: List<com.puretv.twitch.core.model.EmoteLayer>,
     inline: MutableMap<String, InlineTextContent>,
     imageLoader: ImageLoader,
+    emoteSizeSp: Float,
 ) {
     appendInlineContent(key, name.ifBlank { " " })
     inline[key] = InlineTextContent(
-        placeholder = Placeholder(2.em, 2.em, PlaceholderVerticalAlign.Center),
+        placeholder = Placeholder(emoteSizeSp.sp, emoteSizeSp.sp, PlaceholderVerticalAlign.Center),
     ) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             AsyncImage(
@@ -500,6 +510,8 @@ fun TvChatStylePreview(
     settings: AppSettings,
     appearance: AppSettingsStore.ChatAppearance,
     modifier: Modifier = Modifier,
+    messages: List<ChatMessage> = emptyList(),
+    title: String = "Live style preview",
 ) {
     val c = PureTvTvTheme.colors
     val shapes = PureTvTvTheme.shapes
@@ -507,7 +519,7 @@ fun TvChatStylePreview(
     val imageLoader = remember(context) {
         ImageLoader.Builder(context).components { add(GifDecoder.Factory()) }.build()
     }
-    val messages = remember { previewMessages() }
+    val previewChat = remember(messages) { messages.ifEmpty { previewMessages() } }
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(appearance.fadeSeconds) {
         while (appearance.fadeSeconds > 0) {
@@ -517,7 +529,7 @@ fun TvChatStylePreview(
     }
 
     Column(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("Live style preview", style = MaterialTheme.typography.titleMedium, color = c.onSurface)
+        Text(title, style = MaterialTheme.typography.titleMedium, color = c.onSurface)
         BoxWithConstraints(Modifier.fillMaxWidth().weight(1f)) {
             val sceneHeight = minOf(230.dp, maxHeight, maxWidth / (16f / 9f))
             val sceneWidth = sceneHeight * (16f / 9f)
@@ -535,18 +547,23 @@ fun TvChatStylePreview(
                     modifier = Modifier.align(Alignment.TopStart).padding(10.dp)
                         .background(Color.Black.copy(alpha = .55f)).padding(horizontal = 8.dp, vertical = 5.dp),
                 )
-                val previewWidth = minOf(appearance.widthDp.dp, sceneWidth * .49f)
+                val previewWidth = minOf(appearance.widthDp.dp, sceneWidth * .55f)
+                val previewHeight = sceneHeight * appearance.heightFraction.coerceIn(.2f, .98f)
+                val xFraction = appearance.positionXFraction ?: if (appearance.side == "left") 0f else 1f
+                val yFraction = appearance.positionYFraction ?: .5f
+                val previewLeft = (sceneWidth - previewWidth).coerceAtLeast(0.dp) * xFraction.coerceIn(0f, 1f)
+                val previewTop = (sceneHeight - previewHeight).coerceAtLeast(0.dp) * yFraction.coerceIn(0f, 1f)
                 val chatPanelShape = androidx.compose.foundation.shape.RoundedCornerShape(appearance.cornerRadiusDp.dp)
                 Column(
-                    modifier = Modifier.align(if (appearance.side == "left") Alignment.CenterStart else Alignment.CenterEnd)
-                        .fillMaxHeight(.98f)
+                    modifier = Modifier.offset(x = previewLeft, y = previewTop)
                         .width(previewWidth)
+                        .height(previewHeight)
                         .clip(chatPanelShape)
                         .background(c.surfaceContainer.copy(alpha = appearance.opacity))
                         .padding(horizontal = 5.dp, vertical = 4.dp),
                     verticalArrangement = Arrangement.spacedBy(1.dp),
                 ) {
-                    messages.forEach { message ->
+                    previewChat.forEach { message ->
                         val ageSeconds = ((now - message.timestamp).coerceAtLeast(0L) / 1_000L).toInt()
                         val rowAlpha = if (appearance.fadeSeconds == 0) 1f
                         else (1f - ageSeconds.toFloat() / appearance.fadeSeconds).coerceIn(0f, 1f)
@@ -590,11 +607,11 @@ private fun chatBadgeStyle(setId: String): Pair<String, Color>? {
 }
 
 @Composable
-private fun compactChatTextStyle(fontSize: Float, family: String, hasEmotes: Boolean = false): TextStyle {
+private fun compactChatTextStyle(fontSize: Float, family: String, hasEmotes: Boolean = false, emoteSizeSp: Float): TextStyle {
     val size = fontSize.coerceIn(8f, 14f)
     return MaterialTheme.typography.bodySmall.copy(
         fontSize = size.sp,
-        lineHeight = (if (hasEmotes) size * 2f else size + 1f).sp,
+        lineHeight = (if (hasEmotes) maxOf(size + 1f, emoteSizeSp) else size + 1f).sp,
         fontFamily = chatFontFamily(family),
     )
 }

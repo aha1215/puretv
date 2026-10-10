@@ -53,6 +53,7 @@ import com.puretv.twitch.tv.ui.components.ExpressiveIcons
 import com.puretv.twitch.tv.ui.components.TvButtonStyle
 import com.puretv.twitch.tv.ui.components.TvDivider
 import com.puretv.twitch.tv.ui.components.TvChatStylePreview
+import com.puretv.twitch.tv.ui.components.TvChatValueSlider
 import com.puretv.twitch.tv.ui.components.TvExpressiveButton
 import com.puretv.twitch.tv.ui.components.TvExpressiveIconButton
 import com.puretv.twitch.tv.ui.components.TvFilterChip
@@ -416,11 +417,10 @@ private fun ChatAppearanceSection(
                     verticalAlignment = Alignment.Top,
                 ) {
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        ChatOptionGroup(
-                            "Font size",
-                            settings.chatFontSize.toString(),
-                            listOf("8.0" to "8 sp", "9.0" to "9 sp", "10.0" to "10 sp", "12.0" to "12 sp", "14.0" to "14 sp"),
-                        ) { onFontSize(it.toFloat()) }
+                        TvChatValueSlider("Font size", settings.chatFontSize, 8f..14f, 1f, "${settings.chatFontSize.toInt()} sp", onValueChange = onFontSize)
+                        TvChatValueSlider("Emote size", appearance.emoteSizeDp, 16f..40f, 2f, "${appearance.emoteSizeDp.toInt()} dp") { value ->
+                            onAppearanceChange { it.copy(emoteSizeDp = value) }
+                        }
                         ChatOptionGroup(
                             "Font family",
                             appearance.fontFamily,
@@ -431,21 +431,14 @@ private fun ChatAppearanceSection(
                             appearance.textColor,
                             listOf("white" to "White", "warm" to "Warm", "yellow" to "Yellow"),
                         ) { value -> onAppearanceChange { it.copy(textColor = value) } }
-                        ChatOptionGroup(
-                            "Text outline",
-                            appearance.outlineWidthDp.toString(),
-                            listOf(
-                                "0.0" to "Off", "0.75" to "Light", "1.0" to "Thin",
-                                "1.5" to "Medium", "2.5" to "Strong", "4.0" to "Heavier", "6.0" to "Maximum",
-                            ),
-                        ) { value -> onAppearanceChange { it.copy(outlineWidthDp = value.toFloat()) } }
+                        TvChatValueSlider("Text outline", appearance.outlineWidthDp, 0f..6f, 1f, "${appearance.outlineWidthDp} dp") { value ->
+                            onAppearanceChange { it.copy(outlineWidthDp = value) }
+                        }
                     }
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        ChatOptionGroup(
-                            "Chat background",
-                            appearance.opacity.toString(),
-                            listOf("0.0" to "Clear", "0.1" to "10%", "0.2" to "20%", "0.35" to "35%", "0.5" to "50%", "1.0" to "Solid"),
-                        ) { value -> onAppearanceChange { it.copy(opacity = value.toFloat()) } }
+                        TvChatValueSlider("Chat background", appearance.opacity, 0f..1f, .05f, "${(appearance.opacity * 100).toInt()}%") { value ->
+                            onAppearanceChange { it.copy(opacity = value) }
+                        }
                         ChatOptionGroup(
                             "Outline color",
                             appearance.outlineColor,
@@ -461,32 +454,20 @@ private fun ChatAppearanceSection(
                             appearance.side,
                             listOf("right" to "Right", "left" to "Left"),
                         ) { value -> onAppearanceChange { it.copy(side = value) } }
-                        ChatOptionGroup(
-                            "Panel corners",
-                            appearance.cornerRadiusDp.toString(),
-                            listOf(
-                                "0.0" to "Square", "8.0" to "Subtle", "16.0" to "Soft",
-                                "24.0" to "Rounded", "32.0" to "Current", "48.0" to "Extra round",
-                            ),
-                        ) { value -> onAppearanceChange { it.copy(cornerRadiusDp = value.toFloat()) } }
-                        ChatOptionGroup(
-                            "Message fade",
-                            appearance.fadeSeconds.toString(),
-                            listOf("0" to "Off", "10" to "10 sec", "30" to "30 sec", "60" to "60 sec"),
-                        ) { value -> onAppearanceChange { it.copy(fadeSeconds = value.toInt()) } }
+                        TvChatValueSlider("Panel corners", appearance.cornerRadiusDp, 0f..48f, 2f, "${appearance.cornerRadiusDp.toInt()} dp") { value ->
+                            onAppearanceChange { it.copy(cornerRadiusDp = value) }
+                        }
+                        TvChatValueSlider("Message fade", appearance.fadeSeconds.toFloat(), 0f..120f, 1f, if (appearance.fadeSeconds == 0) "Off" else "${appearance.fadeSeconds} sec") { value ->
+                            onAppearanceChange { it.copy(fadeSeconds = value.toInt()) }
+                        }
                         ChatOptionGroup(
                             "Gift subs",
                             if (appearance.hideGiftSubs) "hide" else "show",
                             listOf("show" to "Show", "hide" to "Hide"),
                         ) { value -> onAppearanceChange { it.copy(hideGiftSubs = value == "hide") } }
-                        ChatOptionGroup(
-                            "Chat width",
-                            appearance.widthDp.toString(),
-                            listOf(
-                                "200.0" to "Narrowest", "240.0" to "Narrow", "280.0" to "Compact",
-                                "360.0" to "Medium", "420.0" to "Wide", "480.0" to "Widest",
-                            ),
-                        ) { value -> onAppearanceChange { it.copy(widthDp = value.toFloat()) } }
+                        TvChatValueSlider("Chat width", appearance.widthDp, 200f..480f, 2f, "${appearance.widthDp.toInt()} dp") { value ->
+                            onAppearanceChange { it.copy(widthDp = value) }
+                        }
                         ChatOptionGroup(
                             "Translate chat",
                             if (translation.enabled) "on" else "off",

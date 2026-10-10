@@ -131,6 +131,7 @@ dependencies {
     // restoration, scale-on-focus indication) instead of Material3 touch widgets.
     implementation(libs.compose.tv.foundation)
     implementation(libs.compose.tv.material)
+    implementation(libs.compose.material3)
     implementation(libs.compose.ui)
     implementation("androidx.compose.ui:ui-tooling-preview:1.7.0")
     debugImplementation("androidx.compose.ui:ui-tooling:1.7.0")

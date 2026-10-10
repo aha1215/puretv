@@ -75,6 +75,7 @@ class AppSettingsStore(
         val textColor: String = "white",
         val outlineColor: String = "black",
         val outlineWidthDp: Float = 0.75f,
+        val emoteSizeDp: Float = 18f,
         val useTwitchNameColors: Boolean = true,
         val hideGiftSubs: Boolean = false,
     )
@@ -152,6 +153,7 @@ class AppSettingsStore(
         val TV_CHAT_TEXT_COLOR = stringPreferencesKey("tv_chat_text_color")
         val TV_CHAT_OUTLINE_COLOR = stringPreferencesKey("tv_chat_outline_color")
         val TV_CHAT_OUTLINE_WIDTH = floatPreferencesKey("tv_chat_outline_width")
+        val TV_CHAT_EMOTE_SIZE = floatPreferencesKey("tv_chat_emote_size")
         val TV_CHAT_TWITCH_NAME_COLORS = booleanPreferencesKey("tv_chat_twitch_name_colors")
         val TV_CHAT_HIDE_GIFT_SUBS = booleanPreferencesKey("tv_chat_hide_gift_subs")
         val TV_SUBTITLE_SIZE = floatPreferencesKey("tv_subtitle_size_sp")
@@ -244,6 +246,9 @@ class AppSettingsStore(
             textColor = prefs[Keys.TV_CHAT_TEXT_COLOR].orEmpty().takeIf { it in setOf("white", "warm", "yellow") } ?: "white",
             outlineColor = prefs[Keys.TV_CHAT_OUTLINE_COLOR].orEmpty().takeIf { it in setOf("black", "navy", "white") } ?: "black",
             outlineWidthDp = (prefs[Keys.TV_CHAT_OUTLINE_WIDTH] ?: 0.75f).coerceIn(0f, 6f),
+            // Before this preference existed, chat emotes were rendered at 2 em.
+            // Keep each install's current effective size when it first reads settings.
+            emoteSizeDp = (prefs[Keys.TV_CHAT_EMOTE_SIZE] ?: ((prefs[Keys.CHAT_FONT_SIZE] ?: 9f) * 2f)).coerceIn(16f, 40f),
             useTwitchNameColors = prefs[Keys.TV_CHAT_TWITCH_NAME_COLORS] ?: true,
             hideGiftSubs = prefs[Keys.TV_CHAT_HIDE_GIFT_SUBS] ?: false,
         )
@@ -267,6 +272,7 @@ class AppSettingsStore(
             prefs[Keys.TV_CHAT_TEXT_COLOR] = next.textColor.takeIf { it in setOf("white", "warm", "yellow") } ?: "white"
             prefs[Keys.TV_CHAT_OUTLINE_COLOR] = next.outlineColor.takeIf { it in setOf("black", "navy", "white") } ?: "black"
             prefs[Keys.TV_CHAT_OUTLINE_WIDTH] = next.outlineWidthDp.coerceIn(0f, 6f)
+            prefs[Keys.TV_CHAT_EMOTE_SIZE] = next.emoteSizeDp.coerceIn(16f, 40f)
             prefs[Keys.TV_CHAT_TWITCH_NAME_COLORS] = next.useTwitchNameColors
             prefs[Keys.TV_CHAT_HIDE_GIFT_SUBS] = next.hideGiftSubs
         }

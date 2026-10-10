@@ -68,6 +68,8 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.Player
+import androidx.media3.common.text.Cue
+import androidx.media3.common.text.CueGroup
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.PlayerView
 import androidx.tv.material3.MaterialTheme
@@ -87,8 +89,8 @@ import com.puretv.twitch.tv.ui.components.TvPageTitle
 import com.puretv.twitch.tv.ui.components.TvPanel
 import com.puretv.twitch.tv.ui.components.ExpressiveIcons
 import com.puretv.twitch.tv.ui.components.TvChatOverlay
-import com.puretv.twitch.tv.ui.components.TvChatEditDirection
-import com.puretv.twitch.tv.ui.components.TvChatEditMode
+import com.puretv.twitch.tv.ui.components.TvChatEditorDialog
+import com.puretv.twitch.tv.ui.components.TvSubtitleOverlay
 import com.puretv.twitch.tv.ui.components.TvSectionHeading
 import com.puretv.twitch.tv.ui.components.adjustTvChatAppearance
 import com.puretv.twitch.tv.ui.components.tvFocusClickable
@@ -206,10 +208,11 @@ fun TvVodPlayerScreen(channelLogin: String, vodId: String, title: String, thumbn
     var subtitlePanelVisible by remember { mutableStateOf(false) }
     var chatVisible by remember { mutableStateOf(true) }
     var chatEditing by remember { mutableStateOf(false) }
-    var chatEditMode by remember { mutableStateOf(TvChatEditMode.Reposition) }
     var chatSaving by remember { mutableStateOf(false) }
     var draftChatAppearance by remember { mutableStateOf(chatAppearance) }
     var draftChatFontSize by remember { mutableStateOf(appSettings.chatFontSize) }
+    var resumeChatAfterEdit by remember { mutableStateOf(false) }
+    var subtitleCues by remember { mutableStateOf<List<Cue>>(emptyList()) }
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
         val name = runCatching {
@@ -265,9 +268,12 @@ fun TvVodPlayerScreen(channelLogin: String, vodId: String, title: String, thumbn
             override fun onIsPlayingChanged(nowPlaying: Boolean) {
                 isPlaying = nowPlaying
             }
+            override fun onCues(cueGroup: CueGroup) {
+                subtitleCues = cueGroup.cues
+            }
         }
         player.exoPlayer.addListener(listener)
-        onDispose { viewModel.savePlaybackPosition(); player.exoPlayer.removeListener(listener); player.stop() }
+        onDispose { viewModel.savePlaybackPosition(); player.exoPlayer.removeListener(listener); player.stop(); subtitleCues = emptyList() }
     }
     var controlsVisible by remember { mutableStateOf(false) }
     var controlsActivity by remember { mutableStateOf(0) }
@@ -291,6 +297,8 @@ fun TvVodPlayerScreen(channelLogin: String, vodId: String, title: String, thumbn
         controlsActivity++
     }
     fun beginChatEditing() {
+        resumeChatAfterEdit = player.exoPlayer.isPlaying
+        if (resumeChatAfterEdit) player.exoPlayer.pause()
         draftChatAppearance = if (
             chatAppearance.positionXFraction == null &&
             chatAppearance.positionYFraction == null &&
@@ -299,7 +307,6 @@ fun TvVodPlayerScreen(channelLogin: String, vodId: String, title: String, thumbn
         draftChatFontSize = appSettings.chatFontSize
         chatVisible = true
         chatEditing = true
-        chatEditMode = TvChatEditMode.Reposition
         controlsVisible = false
         scope.launch { androidx.compose.runtime.withFrameNanos { }; runCatching { focus.requestFocus() } }
     }
@@ -317,18 +324,13 @@ fun TvVodPlayerScreen(channelLogin: String, vodId: String, title: String, thumbn
         scope.launch {
             try {
                 settingsStore.updateChatAppearance {
-                    it.copy(
-                        widthDp = draft.widthDp,
-                        side = draft.side,
-                        positionXFraction = draft.positionXFraction,
-                        positionYFraction = draft.positionYFraction,
-                        heightFraction = draft.heightFraction,
-                    )
+                    draft
                 }
                 settingsStore.update { it.copy(chatFontSize = draftChatFontSize) }
                 chatVisible = true
                 chatEditing = false
-                chatEditMode = TvChatEditMode.Reposition
+                if (resumeChatAfterEdit) player.exoPlayer.play()
+                resumeChatAfterEdit = false
             } catch (_: Exception) {
                 // Keep the editor open so Back can retry if preferences fail to save.
             } finally {
@@ -368,40 +370,7 @@ fun TvVodPlayerScreen(channelLogin: String, vodId: String, title: String, thumbn
                     finishChatEditing()
                     return@onPreviewKeyEvent true
                 }
-                when (event.key) {
-                    Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> {
-                        chatEditMode = when (chatEditMode) {
-                            TvChatEditMode.Reposition -> TvChatEditMode.Resize
-                            TvChatEditMode.Resize -> TvChatEditMode.FontSize
-                            TvChatEditMode.FontSize -> TvChatEditMode.Reposition
-                        }
-                    }
-                    Key.DirectionLeft, Key.DirectionRight, Key.DirectionUp, Key.DirectionDown -> {
-                        val direction = when (event.key) {
-                            Key.DirectionLeft -> TvChatEditDirection.Left
-                            Key.DirectionRight -> TvChatEditDirection.Right
-                            Key.DirectionUp -> TvChatEditDirection.Up
-                            else -> TvChatEditDirection.Down
-                        }
-                        if (chatEditMode == TvChatEditMode.FontSize) {
-                            draftChatFontSize = when (direction) {
-                                TvChatEditDirection.Up -> (draftChatFontSize + 1f).coerceAtMost(14f)
-                                TvChatEditDirection.Down -> (draftChatFontSize - 1f).coerceAtLeast(8f)
-                                else -> draftChatFontSize
-                            }
-                        } else {
-                            draftChatAppearance = adjustTvChatAppearance(
-                                appearance = draftChatAppearance,
-                                direction = direction,
-                                resizeMode = chatEditMode == TvChatEditMode.Resize,
-                                availableWidthDp = (configuration.screenWidthDp - 24).coerceAtLeast(280).toFloat(),
-                                availableHeightDp = (configuration.screenHeightDp - 24).coerceAtLeast(240).toFloat(),
-                            )
-                        }
-                    }
-                    else -> Unit
-                }
-                return@onPreviewKeyEvent true
+                return@onPreviewKeyEvent false
             }
             if (subtitlePanelVisible) {
                 if (event.key == Key.Back) {
@@ -460,6 +429,7 @@ fun TvVodPlayerScreen(channelLogin: String, vodId: String, title: String, thumbn
         }
         .onKeyEvent { event ->
         if (event.type != KeyEventType.KeyDown) return@onKeyEvent false
+        if (chatEditing) return@onKeyEvent false
         showControls()
         when (event.key) {
             Key.MediaPlayPause -> { player.togglePlayPause(); true }
@@ -472,12 +442,14 @@ fun TvVodPlayerScreen(channelLogin: String, vodId: String, title: String, thumbn
             useController = false
             this.player = player.exoPlayer
             applySubtitleAppearance(this, subtitleAppearance)
+            subtitleView?.visibility = android.view.View.INVISIBLE
             isFocusable = false
             isFocusableInTouchMode = false
             descendantFocusability = android.view.ViewGroup.FOCUS_BLOCK_DESCENDANTS
         } }, update = { view ->
             view.player = player.exoPlayer
             applySubtitleAppearance(view, subtitleAppearance)
+            view.subtitleView?.visibility = android.view.View.INVISIBLE
         })
 
         TvChatOverlay(
@@ -487,8 +459,19 @@ fun TvVodPlayerScreen(channelLogin: String, vodId: String, title: String, thumbn
             appearance = if (chatEditing) draftChatAppearance else chatAppearance,
             instantInitialScroll = state.savedBundle,
             editing = chatEditing,
-            editMode = chatEditMode,
         )
+        TvSubtitleOverlay(subtitleCues, subtitleAppearance, Modifier.fillMaxSize())
+        if (chatEditing) {
+            TvChatEditorDialog(
+                settings = appSettings,
+                appearance = draftChatAppearance,
+                chatMessages = state.chatMessages,
+                fontSize = draftChatFontSize,
+                onFontSizeChange = { draftChatFontSize = it },
+                onAppearanceChange = { draftChatAppearance = it },
+                onSave = ::finishChatEditing,
+            )
+        }
         if (state.savedChatLoading && state.chatMessages.isEmpty() && chatVisible) {
             Text(
                 "Loading saved chat…",
