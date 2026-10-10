@@ -94,7 +94,7 @@ fun adjustTvChatAppearance(
 
     if (resizeMode) {
         return when (direction) {
-            TvChatEditDirection.Left -> appearance.copy(widthDp = (width - 24f).coerceAtLeast(280f))
+            TvChatEditDirection.Left -> appearance.copy(widthDp = (width - 24f).coerceAtLeast(200f))
             TvChatEditDirection.Right -> appearance.copy(widthDp = (width + 24f).coerceAtMost(minOf(480f, availableWidthDp)))
             TvChatEditDirection.Up -> appearance.copy(heightFraction = (appearance.heightFraction + 24f / availableHeightDp).coerceAtMost(0.98f))
             TvChatEditDirection.Down -> appearance.copy(heightFraction = (appearance.heightFraction - 24f / availableHeightDp).coerceAtLeast(0.2f))
@@ -118,6 +118,7 @@ fun TvChatOverlay(
     messages: List<ChatMessage>,
     appSettings: AppSettings,
     appearance: AppSettingsStore.ChatAppearance,
+    instantInitialScroll: Boolean = false,
     editing: Boolean = false,
     editMode: TvChatEditMode = TvChatEditMode.Reposition,
     modifier: Modifier = Modifier,
@@ -130,6 +131,9 @@ fun TvChatOverlay(
     }
     val listState = rememberLazyListState()
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    val visibleMessages = remember(messages, appearance.hideGiftSubs) {
+        if (appearance.hideGiftSubs) messages.filterNot(::isGiftSubMessage) else messages
+    }
 
     LaunchedEffect(appearance.fadeSeconds) {
         while (appearance.fadeSeconds > 0) {
@@ -137,8 +141,11 @@ fun TvChatOverlay(
             delay(1_000)
         }
     }
-    LaunchedEffect(messages.lastOrNull()?.id) {
-        if (messages.isNotEmpty()) listState.animateScrollToItem(messages.lastIndex)
+    LaunchedEffect(visibleMessages.lastOrNull()?.id, instantInitialScroll) {
+        if (visibleMessages.isNotEmpty()) {
+            if (instantInitialScroll) listState.scrollToItem(visibleMessages.lastIndex)
+            else listState.animateScrollToItem(visibleMessages.lastIndex)
+        }
     }
 
     AnimatedVisibility(
@@ -156,6 +163,7 @@ fun TvChatOverlay(
             val yFraction = appearance.positionYFraction ?: 0.5f
             val left = maxLeft * xFraction.coerceIn(0f, 1f)
             val top = maxTop * yFraction.coerceIn(0f, 1f)
+            val panelShape = androidx.compose.foundation.shape.RoundedCornerShape(appearance.cornerRadiusDp.dp)
             val editHint = when (editMode) {
                 TvChatEditMode.Reposition -> "MOVE  ·  Arrows reposition  ·  Center next mode  ·  Back save"
                 TvChatEditMode.Resize -> "PANEL SIZE  ·  ← → width  ·  ↑ ↓ height  ·  Center next mode  ·  Back save"
@@ -167,9 +175,9 @@ fun TvChatOverlay(
                     .offset(x = left, y = top)
                     .width(panelWidth)
                     .height(panelHeight)
-                    .clip(shapes.paneShape)
+                    .clip(panelShape)
                     .background(c.surfaceContainer.copy(alpha = appearance.opacity))
-                    .then(if (editing) Modifier.border(2.dp, c.primary, shapes.paneShape) else Modifier)
+                    .then(if (editing) Modifier.border(2.dp, c.primary, panelShape) else Modifier)
                     .padding(5.dp),
                 verticalArrangement = Arrangement.spacedBy(1.dp),
             ) {
@@ -184,7 +192,7 @@ fun TvChatOverlay(
                     )
                 }
                 LazyColumn(state = listState, verticalArrangement = Arrangement.spacedBy(1.dp)) {
-                    items(messages, key = { it.id }) { message ->
+                    items(visibleMessages, key = { it.id }) { message ->
                         val ageSeconds = ((now - message.timestamp).coerceAtLeast(0L) / 1_000L).toInt()
                         val fade = appearance.fadeSeconds
                         val alpha = if (fade == 0) 1f else (1f - ageSeconds.toFloat() / fade).coerceIn(0f, 1f)
@@ -251,11 +259,17 @@ private fun TvChatMessageRow(
     OutlinedChatAnnotatedText(
         text = body,
         inlineContent = inlineContent,
-        style = compactChatTextStyle(appSettings.chatFontSize, appearance.fontFamily),
+        style = compactChatTextStyle(
+            appSettings.chatFontSize,
+            appearance.fontFamily,
+            hasEmotes = message.parsedParts.any {
+                it is MessagePart.TwitchEmote || it is MessagePart.ThirdPartyEmote
+            },
+        ),
         color = messageColor,
         appearance = appearance,
-        maxLines = 2,
-        overflow = TextOverflow.Ellipsis,
+        maxLines = Int.MAX_VALUE,
+        overflow = TextOverflow.Clip,
         modifier = Modifier
             .fillMaxWidth()
             .graphicsLayer { this.alpha = alpha }
@@ -264,6 +278,14 @@ private fun TvChatMessageRow(
             .padding(horizontal = 4.dp, vertical = 1.dp),
     )
 }
+
+private val GiftSubMessagePattern = Regex(
+    """\bgifted\s+(?:a|\d+)\s+(?:tier\s*[1-3]\s+)?subs?\s+to\b""",
+    RegexOption.IGNORE_CASE,
+)
+
+private fun isGiftSubMessage(message: ChatMessage): Boolean =
+    GiftSubMessagePattern.containsMatchIn(message.message)
 
 private fun buildTvChatBody(
     message: ChatMessage,
@@ -295,7 +317,58 @@ private fun buildTvChatBody(
 
         val translatedMessage = message.translatedMessage
         if (translatedMessage != null) {
-            append(decodeHtmlEntities(translatedMessage))
+            val decoded = decodeHtmlEntities(translatedMessage)
+            val emotesByName = message.parsedParts.mapNotNull { part ->
+                when (part) {
+                    is MessagePart.TwitchEmote -> part.name to part
+                    is MessagePart.ThirdPartyEmote -> part.name to part
+                    is MessagePart.Text -> null
+                }
+            }.toMap()
+            if (emotesByName.isEmpty()) append(decoded)
+            else {
+                Regex("\\s+|\\S+").findAll(decoded).forEachIndexed { index, match ->
+                    val token = match.value
+                    val leading = token.takeWhile { !it.isLetterOrDigit() && it != '_' }
+                    val trailing = token.drop(leading.length).takeLastWhile { !it.isLetterOrDigit() && it != '_' }
+                    val name = token.drop(leading.length).let { core ->
+                        if (trailing.isEmpty()) core else core.dropLast(trailing.length)
+                    }
+                    val emote = emotesByName[name]
+                    if (emote == null || name.isBlank()) append(token)
+                    else {
+                        append(leading)
+                        when (emote) {
+                            is MessagePart.TwitchEmote -> appendTvEmote(
+                                key = "translated_tw_${emote.id}_$index",
+                                name = emote.name,
+                                url = "https://static-cdn.jtvnw.net/emoticons/v2/${emote.id}/default/dark/2.0",
+                                overlays = emptyList(),
+                                inline = inline,
+                                imageLoader = imageLoader,
+                            )
+                            is MessagePart.ThirdPartyEmote -> {
+                                val enabled = when (emote.provider) {
+                                    com.puretv.twitch.core.model.EmoteProvider.BTTV -> appSettings.showBttvEmotes
+                                    com.puretv.twitch.core.model.EmoteProvider.FFZ -> appSettings.showFfzEmotes
+                                    com.puretv.twitch.core.model.EmoteProvider.SEVENTV -> appSettings.show7tvEmotes
+                                    com.puretv.twitch.core.model.EmoteProvider.TWITCH -> true
+                                }
+                                if (enabled) appendTvEmote(
+                                    key = "translated_tp_${emote.name}_$index",
+                                    name = emote.name,
+                                    url = emote.url,
+                                    overlays = emote.overlays,
+                                    inline = inline,
+                                    imageLoader = imageLoader,
+                                ) else append(emote.name)
+                            }
+                            is MessagePart.Text -> append(token)
+                        }
+                        append(trailing)
+                    }
+                }
+            }
         } else if (message.parsedParts.isEmpty()) {
             append(message.message)
         } else {
@@ -463,11 +536,12 @@ fun TvChatStylePreview(
                         .background(Color.Black.copy(alpha = .55f)).padding(horizontal = 8.dp, vertical = 5.dp),
                 )
                 val previewWidth = minOf(appearance.widthDp.dp, sceneWidth * .49f)
+                val chatPanelShape = androidx.compose.foundation.shape.RoundedCornerShape(appearance.cornerRadiusDp.dp)
                 Column(
                     modifier = Modifier.align(if (appearance.side == "left") Alignment.CenterStart else Alignment.CenterEnd)
                         .fillMaxHeight(.98f)
                         .width(previewWidth)
-                        .clip(shapes.mdShape)
+                        .clip(chatPanelShape)
                         .background(c.surfaceContainer.copy(alpha = appearance.opacity))
                         .padding(horizontal = 5.dp, vertical = 4.dp),
                     verticalArrangement = Arrangement.spacedBy(1.dp),
@@ -516,11 +590,11 @@ private fun chatBadgeStyle(setId: String): Pair<String, Color>? {
 }
 
 @Composable
-private fun compactChatTextStyle(fontSize: Float, family: String): TextStyle {
+private fun compactChatTextStyle(fontSize: Float, family: String, hasEmotes: Boolean = false): TextStyle {
     val size = fontSize.coerceIn(8f, 14f)
     return MaterialTheme.typography.bodySmall.copy(
         fontSize = size.sp,
-        lineHeight = (size + 1f).sp,
+        lineHeight = (if (hasEmotes) size * 2f else size + 1f).sp,
         fontFamily = chatFontFamily(family),
     )
 }

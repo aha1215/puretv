@@ -25,6 +25,8 @@ import com.puretv.twitch.core.adblock.PlaylistAction
 import com.puretv.twitch.core.adblock.PlaylistDetect
 import com.puretv.twitch.core.model.StreamQuality
 import com.puretv.twitch.core.stream.HlsMasterParser
+import com.puretv.twitch.tv.data.AppSettingsStore
+import com.puretv.twitch.tv.data.SmbRoutingDataSourceFactory
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -57,6 +59,7 @@ class TvPlayer(
     private val context: Context,
     private val adBlockEngine: AdBlockEngine,
     private val backupStreamResolver: BackupStreamResolver,
+    private val settingsStore: AppSettingsStore,
 ) {
     private val okHttpClient = OkHttpClient.Builder()
         .addInterceptor(TvAdBlockInterceptor(adBlockEngine, backupStreamResolver))
@@ -106,7 +109,12 @@ class TvPlayer(
             DefaultMediaSourceFactory(context)
                 // DefaultDataSource delegates HTTP(S) to the existing OkHttp client
                 // (and ad-block interceptor) while supporting local content:// URIs.
-                .setDataSourceFactory(DefaultDataSource.Factory(context, OkHttpDataSource.Factory(okHttpClient))),
+                .setDataSourceFactory(
+                    SmbRoutingDataSourceFactory(
+                        DefaultDataSource.Factory(context, OkHttpDataSource.Factory(okHttpClient)),
+                        settingsStore,
+                    ),
+                ),
         )
         .setTrackSelector(
             DefaultTrackSelector(context).apply {

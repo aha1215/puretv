@@ -76,6 +76,7 @@ import androidx.compose.ui.window.Dialog
 import coil3.compose.AsyncImage
 import com.puretv.twitch.core.model.VideoInfo
 import com.puretv.twitch.tv.data.AppSettingsStore
+import com.puretv.twitch.tv.data.SmbVodDownloads
 import com.puretv.twitch.tv.ui.TvVodListViewModel
 import com.puretv.twitch.tv.ui.TvVodPlayerViewModel
 import com.puretv.twitch.tv.ui.components.TvButtonSize
@@ -187,7 +188,9 @@ fun TvVodListScreen(channelLogin: String, onOpenVod: (VideoInfo) -> Unit, onBack
 @OptIn(UnstableApi::class)
 @Composable
 fun TvVodPlayerScreen(channelLogin: String, vodId: String, title: String, thumbnailUrl: String, durationSeconds: Long, onBack: () -> Unit,
-                      viewModel: TvVodPlayerViewModel = koinViewModel(parameters = { parametersOf(channelLogin, vodId, title, thumbnailUrl, durationSeconds) })) {
+                      offlineBundle: Boolean = false,
+                      onOpenSavedVods: (() -> Unit)? = null,
+                      viewModel: TvVodPlayerViewModel = koinViewModel(parameters = { parametersOf(channelLogin, vodId, title, thumbnailUrl, durationSeconds, offlineBundle) })) {
     val state by viewModel.state.collectAsState()
     val context = LocalContext.current
     val player = viewModel.player
@@ -268,6 +271,21 @@ fun TvVodPlayerScreen(channelLogin: String, vodId: String, title: String, thumbn
     }
     var controlsVisible by remember { mutableStateOf(false) }
     var controlsActivity by remember { mutableStateOf(0) }
+    var downloadsScreenVisible by remember { mutableStateOf(false) }
+    var downloadQualityDialogVisible by remember { mutableStateOf(false) }
+    var resumeAfterDownloads by remember { mutableStateOf(false) }
+    fun openDownloadsScreen() {
+        resumeAfterDownloads = player.exoPlayer.isPlaying
+        if (resumeAfterDownloads) player.exoPlayer.pause()
+        downloadsScreenVisible = true
+        controlsVisible = false
+    }
+    fun closeDownloadsScreen(resumePlayback: Boolean = true) {
+        downloadsScreenVisible = false
+        if (resumePlayback && resumeAfterDownloads) player.exoPlayer.play()
+        resumeAfterDownloads = false
+        scope.launch { androidx.compose.runtime.withFrameNanos { }; runCatching { focus.requestFocus() } }
+    }
     fun showControls() {
         controlsVisible = true
         controlsActivity++
@@ -337,6 +355,13 @@ fun TvVodPlayerScreen(channelLogin: String, vodId: String, title: String, thumbn
         .onPreviewKeyEvent { event ->
             if (event.type == KeyEventType.KeyUp) return@onPreviewKeyEvent false
             if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+            if (downloadsScreenVisible) {
+                if (event.key == Key.Back) {
+                    closeDownloadsScreen()
+                    return@onPreviewKeyEvent true
+                }
+                return@onPreviewKeyEvent false
+            }
             if (chatEditing) {
                 if (chatSaving) return@onPreviewKeyEvent true
                 if (event.key == Key.Back) {
@@ -417,6 +442,12 @@ fun TvVodPlayerScreen(channelLogin: String, vodId: String, title: String, thumbn
                     }
                     true
                 }
+                Key.DirectionLeft, Key.DirectionRight -> {
+                    if (!controlsVisible) {
+                        viewModel.seekBy(if (event.key == Key.DirectionLeft) -10_000L else 10_000L)
+                        true
+                    } else false
+                }
                 Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> {
                     if (controlsVisible) false
                     else {
@@ -454,9 +485,18 @@ fun TvVodPlayerScreen(channelLogin: String, vodId: String, title: String, thumbn
             messages = state.chatMessages,
             appSettings = if (chatEditing) appSettings.copy(chatFontSize = draftChatFontSize) else appSettings,
             appearance = if (chatEditing) draftChatAppearance else chatAppearance,
+            instantInitialScroll = state.savedBundle,
             editing = chatEditing,
             editMode = chatEditMode,
         )
+        if (state.savedChatLoading && state.chatMessages.isEmpty() && chatVisible) {
+            Text(
+                "Loading saved chat…",
+                modifier = Modifier.align(Alignment.BottomEnd).padding(20.dp),
+                color = Color.White.copy(alpha = .82f),
+                style = MaterialTheme.typography.bodyMedium,
+            )
+        }
 
         if (controlsVisible) {
             val fraction = if (playbackDuration > 0L) {
@@ -491,6 +531,67 @@ fun TvVodPlayerScreen(channelLogin: String, vodId: String, title: String, thumbn
                 }
                 if (state.loading) Text("Loading video…", color = Color.White, style = MaterialTheme.typography.bodySmall)
                 state.error?.let { Text(it, color = c.error, style = MaterialTheme.typography.bodyMedium) }
+                state.downloadProgress?.let { progress ->
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        val percentage = progress.fraction?.let { (it * 100f).toInt() }
+                        val itemLabel = when (progress.phase) {
+                            "Downloading video" -> "${progress.completed}/${progress.total} segments"
+                            "Translating chat" -> "${progress.completed}/${progress.total} messages"
+                            else -> progress.total.takeIf { it > 0 }?.let { "${progress.completed}/$it" }
+                        }
+                        Text(
+                            buildString {
+                                append(progress.phase)
+                                percentage?.let { append(if (progress.phase == "Downloading video") " · ~$it%" else " · $it%") }
+                                itemLabel?.let { append(" · $it") }
+                            },
+                            color = Color.White,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        progress.fraction?.let { fraction ->
+                            Box(
+                                Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(8.dp))
+                                    .background(Color.White.copy(alpha = .24f)),
+                            ) {
+                                Box(
+                                    Modifier.fillMaxWidth(fraction).fillMaxHeight()
+                                        .background(c.primary),
+                                )
+                            }
+                        }
+                        if (progress.bytesTransferred > 0L || progress.bytesPerSecond != null) {
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                val sizeText = progress.estimatedTotalBytes?.let {
+                                    "${formatDownloadBytes(progress.bytesTransferred)} / ~${formatDownloadBytes(it)}"
+                                } ?: "${formatDownloadBytes(progress.bytesTransferred)} transferred"
+                                Text(sizeText, color = Color.White.copy(alpha = .84f), style = MaterialTheme.typography.bodySmall)
+                                progress.bytesPerSecond?.let {
+                                    Text("${formatDownloadBytes(it)}/s", color = Color.White.copy(alpha = .84f), style = MaterialTheme.typography.bodySmall)
+                                }
+                            }
+                        }
+                    }
+                }
+                state.downloadError?.let { Text(it, color = c.error, style = MaterialTheme.typography.bodySmall, maxLines = 2) }
+                state.downloadMessage?.let { Text(it, color = Color.White, style = MaterialTheme.typography.bodySmall) }
+                if (state.smbSpaceLoading) {
+                    Text("Reading SMB storage…", color = Color.White.copy(alpha = .84f), style = MaterialTheme.typography.bodySmall)
+                }
+                state.smbSpace?.let { space ->
+                    Text(
+                        "SMB volume · ${formatDownloadBytes(space.usedBytes)} used · ${formatDownloadBytes(space.freeBytes)} free to account · ${formatDownloadBytes(space.totalBytes)} total",
+                        color = Color.White.copy(alpha = .84f),
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 2,
+                    )
+                }
+                state.smbSpaceError?.let { Text(it, color = Color.White.copy(alpha = .72f), style = MaterialTheme.typography.bodySmall) }
+                state.downloadedVideoBytes?.let {
+                    Text("Saved video size · ${formatDownloadBytes(it)}", color = Color.White.copy(alpha = .84f), style = MaterialTheme.typography.bodySmall)
+                }
             }
             Column(
                 Modifier.align(Alignment.BottomCenter)
@@ -552,6 +653,22 @@ fun TvVodPlayerScreen(channelLogin: String, vodId: String, title: String, thumbn
                     TvExpressiveButton("+1 min", { showControls(); viewModel.seekBy(60_000) }, style = TvButtonStyle.Outlined, size = TvButtonSize.Medium)
                     TvExpressiveButton("Edit chat", ::beginChatEditing, style = TvButtonStyle.Tonal, size = TvButtonSize.Medium, icon = ExpressiveIcons.Chat)
                     TvExpressiveButton("Subtitles", ::openSubtitlePanel, style = TvButtonStyle.Outlined, size = TvButtonSize.Medium, modifier = Modifier.focusRequester(subtitleFocus))
+                    TvExpressiveButton(
+                        when {
+                            state.downloadProgress != null -> "View download"
+                            state.downloadMessage != null -> "Open downloads"
+                            else -> "Save to SMB"
+                        },
+                        onClick = {
+                            if (state.downloadProgress == null && state.downloadMessage == null) {
+                                viewModel.loadDownloadQualities()
+                                downloadQualityDialogVisible = true
+                            } else openDownloadsScreen()
+                        },
+                        style = TvButtonStyle.Tonal,
+                        size = TvButtonSize.Medium,
+                        icon = ExpressiveIcons.Download,
+                    )
                 }
                 Text(
                     "DOWN controls  ·  UP seek bar / chat when hidden  ·  LEFT/RIGHT seek when selected  ·  BACK hide controls / exit",
@@ -559,6 +676,57 @@ fun TvVodPlayerScreen(channelLogin: String, vodId: String, title: String, thumbn
                     style = MaterialTheme.typography.bodySmall,
                     modifier = Modifier.align(Alignment.CenterHorizontally),
                 )
+            }
+        }
+
+        if (downloadQualityDialogVisible) {
+            Dialog(onDismissRequest = { downloadQualityDialogVisible = false }) {
+                Column(
+                    Modifier.fillMaxWidth(.82f)
+                        .widthIn(max = 760.dp)
+                        .clip(RoundedCornerShape(24.dp))
+                        .background(Color(0xF0181A20))
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 28.dp, vertical = 22.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Text("Download quality", style = MaterialTheme.typography.headlineSmall, color = Color.White)
+                    Text(
+                        "Choose a quality Twitch currently offers. Source keeps the highest available quality; lower qualities use less SMB space.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color.White.copy(alpha = .76f),
+                    )
+                    when {
+                        state.downloadQualitiesLoading -> Text("Checking Twitch qualities…", color = Color.White)
+                        state.downloadQualitiesError != null -> {
+                            Text(requireNotNull(state.downloadQualitiesError), color = c.error)
+                            TvExpressiveButton(
+                                "Try again",
+                                { viewModel.loadDownloadQualities() },
+                                style = TvButtonStyle.Tonal,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
+                        else -> state.downloadQualities.forEach { option ->
+                            TvExpressiveButton(
+                                option.label,
+                                onClick = {
+                                    downloadQualityDialogVisible = false
+                                    viewModel.downloadToSmb(option.quality)
+                                    openDownloadsScreen()
+                                },
+                                style = if (option.quality == com.puretv.twitch.core.model.StreamQuality.SOURCE) TvButtonStyle.Filled else TvButtonStyle.Tonal,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
+                    }
+                    TvExpressiveButton(
+                        "Cancel",
+                        { downloadQualityDialogVisible = false },
+                        style = TvButtonStyle.Outlined,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
             }
         }
 
@@ -664,6 +832,22 @@ fun TvVodPlayerScreen(channelLogin: String, vodId: String, title: String, thumbn
                 }
             }
         }
+
+        if (downloadsScreenVisible) {
+            TvDownloadsScreen(
+                onBack = { closeDownloadsScreen() },
+                onPlaySavedVod = {
+                    closeDownloadsScreen(resumePlayback = false)
+                    viewModel.playSavedBundle()
+                },
+                onOpenSavedVods = onOpenSavedVods?.let { openSavedVods ->
+                    {
+                        closeDownloadsScreen()
+                        openSavedVods()
+                    }
+                },
+            )
+        }
     }
 }
 
@@ -711,6 +895,18 @@ private fun duration(seconds: Long): String {
     val hours = seconds / 3600
     val minutes = seconds % 3600 / 60
     return if (hours > 0) "${hours}h ${minutes}m" else "${minutes}m"
+}
+
+private fun formatDownloadBytes(bytes: Long): String {
+    if (bytes < 1024L) return "$bytes B"
+    val units = listOf("KiB", "MiB", "GiB", "TiB")
+    var value = bytes.toDouble()
+    var unit = -1
+    while (value >= 1024.0 && unit < units.lastIndex) {
+        value /= 1024.0
+        unit++
+    }
+    return String.format(java.util.Locale.getDefault(), "%.1f %s", value, units[unit])
 }
 
 private fun playerTime(seconds: Long): String {

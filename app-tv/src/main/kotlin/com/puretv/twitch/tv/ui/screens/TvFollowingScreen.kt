@@ -81,6 +81,7 @@ import org.koin.androidx.compose.koinViewModel
 fun TvFollowingScreen(
     onOpenChannel: (String) -> Unit,
     onOpenHome: () -> Unit,
+    onOpenDownloads: () -> Unit,
     onOpenBrowse: () -> Unit,
     onOpenSearch: () -> Unit,
     onOpenSettings: () -> Unit,
@@ -129,6 +130,7 @@ fun TvFollowingScreen(
                 when (dest) {
                     TvNavDestination.HOME -> onOpenHome()
                     TvNavDestination.FOLLOWING -> Unit
+                    TvNavDestination.DOWNLOADS -> onOpenDownloads()
                     TvNavDestination.BROWSE -> onOpenBrowse()
                     TvNavDestination.SEARCH -> onOpenSearch()
                     TvNavDestination.SETTINGS -> onOpenSettings()

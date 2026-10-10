@@ -37,6 +37,19 @@
 -dontwarn okhttp3.**
 -dontwarn okio.**
 
+# SMBJ's default authenticator has optional Java SE Kerberos/GSSAPI support,
+# and the bundled message bus filter can evaluate optional EL expressions.
+# Android does not provide these APIs; the TV app uses NTLM/guest SMB auth.
+-dontwarn org.ietf.jgss.**
+-dontwarn javax.el.**
+
+# The SMB filesystem-space query constructs SMB2_QUERY_INFO through reflection
+# because SMBJ's NIO FileStore API is not implemented.
+-keep class com.hierynomus.mssmb2.messages.SMB2QueryInfoRequest { *; }
+-keep class com.hierynomus.mssmb2.messages.SMB2QueryInfoRequest$SMB2QueryInfoType { *; }
+-keep class com.hierynomus.mssmb2.messages.SMB2QueryInfoResponse { *; }
+-keep class com.hierynomus.mssmb2.SMB2Packet { *; }
+
 # Ktor's optional IntelliJ debugger detector references JVM management APIs
 # that are absent on Android. They are only used by its desktop debug path.
 -dontwarn java.lang.management.ManagementFactory

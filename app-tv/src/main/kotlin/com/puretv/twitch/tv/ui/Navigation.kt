@@ -17,6 +17,8 @@ import com.puretv.twitch.tv.ui.screens.TvSettingsScreen
 import com.puretv.twitch.tv.ui.screens.TvStreamScreen
 import com.puretv.twitch.tv.ui.screens.TvVodListScreen
 import com.puretv.twitch.tv.ui.screens.TvVodPlayerScreen
+import com.puretv.twitch.tv.ui.screens.TvSavedVodsScreen
+import com.puretv.twitch.tv.ui.screens.TvDownloadsScreen
 
 /**
  * SECTION 07.2 — TV route table. Mirrors the phone app's [Routes] one-for-one
@@ -47,6 +49,9 @@ object Routes {
     const val CATEGORY = "category/{gameId}"
     const val VODS = "vods/{channelLogin}"
     const val VOD_PLAYER = "vod/{channelLogin}/{vodId}?title={title}&thumbnailUrl={thumbnailUrl}&durationSeconds={durationSeconds}"
+    const val SAVED_VOD_PLAYER = "saved-vod/{channelLogin}/{vodId}?title={title}&thumbnailUrl={thumbnailUrl}&durationSeconds={durationSeconds}"
+    const val SAVED_VODS = "saved-vods"
+    const val DOWNLOADS = "downloads"
 
     fun stream(channelLogin: String) = "stream/$channelLogin"
     fun channel(channelLogin: String) = "channel/$channelLogin"
@@ -54,6 +59,8 @@ object Routes {
     fun vods(channelLogin: String) = "vods/$channelLogin"
     fun vod(channelLogin: String, vodId: String, title: String, thumbnailUrl: String, durationSeconds: Long) =
         "vod/$channelLogin/$vodId?title=${Uri.encode(title)}&thumbnailUrl=${Uri.encode(thumbnailUrl)}&durationSeconds=$durationSeconds"
+    fun savedVod(channelLogin: String, vodId: String, title: String, thumbnailUrl: String, durationSeconds: Long) =
+        "saved-vod/$channelLogin/$vodId?title=${Uri.encode(title)}&thumbnailUrl=${Uri.encode(thumbnailUrl)}&durationSeconds=$durationSeconds"
 }
 
 @Composable
@@ -68,16 +75,33 @@ fun PureTvTvNavHost(navController: NavHostController = rememberNavController()) 
                     navController.navigate(Routes.vod(vod.userLogin, vod.id, vod.title, vod.thumbnailUrl, vod.durationSeconds))
                 },
                 onOpenFollowing = { navController.navigate(Routes.FOLLOWING) },
+                onOpenDownloads = { navController.navigate(Routes.DOWNLOADS) },
                 onOpenBrowse = { navController.navigate(Routes.BROWSE) },
                 onOpenSearch = { navController.navigate(Routes.SEARCH) },
                 onOpenSettings = { navController.navigate(Routes.SETTINGS) },
                 onOpenLogin = { navController.navigate(Routes.LOGIN) },
+                onOpenSavedVods = { navController.navigate(Routes.SAVED_VODS) },
+            )
+        }
+        composable(Routes.SAVED_VODS) {
+            TvSavedVodsScreen(
+                onBack = navController::popBackStack,
+                onOpenVod = { vod ->
+                    navController.navigate(Routes.savedVod(vod.channelLogin, vod.id, vod.title, vod.thumbnailUrl, vod.durationSeconds))
+                },
+            )
+        }
+        composable(Routes.DOWNLOADS) {
+            TvDownloadsScreen(
+                onBack = navController::popBackStack,
+                onOpenSavedVods = { navController.navigate(Routes.SAVED_VODS) },
             )
         }
         composable(Routes.FOLLOWING) {
             TvFollowingScreen(
                 onOpenChannel = { navController.navigate(Routes.channel(it)) },
                 onOpenHome = navController::popBackStack,
+                onOpenDownloads = { navController.navigate(Routes.DOWNLOADS) },
                 onOpenBrowse = { navController.navigate(Routes.BROWSE) },
                 onOpenSearch = { navController.navigate(Routes.SEARCH) },
                 onOpenSettings = { navController.navigate(Routes.SETTINGS) },
@@ -139,6 +163,18 @@ fun PureTvTvNavHost(navController: NavHostController = rememberNavController()) 
                 title = entry.arguments?.getString("title").orEmpty(),
                 thumbnailUrl = entry.arguments?.getString("thumbnailUrl").orEmpty(),
                 durationSeconds = entry.arguments?.getString("durationSeconds")?.toLongOrNull() ?: 0L,
+                onBack = navController::popBackStack,
+                onOpenSavedVods = { navController.navigate(Routes.SAVED_VODS) },
+            )
+        }
+        composable(Routes.SAVED_VOD_PLAYER) { entry ->
+            TvVodPlayerScreen(
+                channelLogin = entry.arguments?.getString("channelLogin").orEmpty(),
+                vodId = entry.arguments?.getString("vodId").orEmpty(),
+                title = entry.arguments?.getString("title").orEmpty(),
+                thumbnailUrl = entry.arguments?.getString("thumbnailUrl").orEmpty(),
+                durationSeconds = entry.arguments?.getString("durationSeconds")?.toLongOrNull() ?: 0L,
+                offlineBundle = true,
                 onBack = navController::popBackStack,
             )
         }

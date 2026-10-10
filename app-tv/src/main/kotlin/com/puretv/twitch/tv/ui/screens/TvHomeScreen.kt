@@ -1,5 +1,8 @@
 package com.puretv.twitch.tv.ui.screens
 
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -41,6 +44,8 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
@@ -56,8 +61,16 @@ import androidx.tv.material3.Text
 import coil3.compose.AsyncImage
 import com.puretv.twitch.core.model.StreamInfo
 import com.puretv.twitch.core.model.VideoInfo
+import com.puretv.twitch.core.repository.VodRepository
+import com.puretv.twitch.core.stream.StoryboardParser
+import io.ktor.client.HttpClient
+import io.ktor.client.call.body
+import io.ktor.client.request.get
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import com.puretv.twitch.tv.data.AppSettingsStore
+import com.puretv.twitch.tv.data.SmbVodDownloads
 import com.puretv.twitch.tv.ui.HomeViewModel
 import com.puretv.twitch.tv.ui.components.ExpressiveIcons
 import com.puretv.twitch.tv.ui.components.TvButtonSize
@@ -102,13 +115,29 @@ fun TvHomeScreen(
     onOpenVod: (AppSettingsStore.ViewedVod) -> Unit,
     onOpenLatestVod: (VideoInfo) -> Unit,
     onOpenFollowing: () -> Unit,
+    onOpenDownloads: () -> Unit,
     onOpenBrowse: () -> Unit,
     onOpenSearch: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenLogin: () -> Unit,
+    onOpenSavedVods: () -> Unit,
     viewModel: HomeViewModel = koinViewModel(),
 ) {
     val state by viewModel.state.collectAsState()
+    val smbDownloads = koinInject<SmbVodDownloads>()
+    var savedVodThumbnails by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    var savedVodSourceOffsets by remember { mutableStateOf<Map<String, Long>>(emptyMap()) }
+    LaunchedEffect(smbDownloads) {
+        val savedVods = runCatching { smbDownloads.savedVods() }.getOrDefault(emptyList())
+        savedVodThumbnails = savedVods.mapNotNull { vod ->
+                vod.thumbnailUrl.takeIf(String::isNotBlank)?.let { vod.id to it }
+            }.toMap()
+        savedVodSourceOffsets = savedVods.associate { it.id to it.sourceStartSeconds }
+    }
+    val viewedVods = state.viewedVods.map { vod ->
+        if (vod.thumbnailUrl.isNotBlank()) vod
+        else savedVodThumbnails[vod.id]?.let { vod.copy(thumbnailUrl = it) } ?: vod
+    }
     val updateManager = koinInject<TvUpdateManager>()
     val updateState by updateManager.state.collectAsState()
     val c = PureTvTvTheme.colors
@@ -122,7 +151,7 @@ fun TvHomeScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
     var homeContentFocusClaimed by remember { mutableStateOf(false) }
     val hasLatestRow = state.isLoggedIn && state.latestFollowedVods.isNotEmpty()
-    val hasViewedRow = state.viewedVods.isNotEmpty()
+    val hasViewedRow = viewedVods.isNotEmpty()
     val hasFollowedLiveRow = state.followedLive.isNotEmpty()
     val hasLiveRow = state.topStreams.isNotEmpty()
     val initialRowFocusTarget = when {
@@ -175,6 +204,7 @@ fun TvHomeScreen(
                 when (dest) {
                     TvNavDestination.HOME -> Unit
                     TvNavDestination.FOLLOWING -> onOpenFollowing()
+                    TvNavDestination.DOWNLOADS -> onOpenDownloads()
                     TvNavDestination.BROWSE -> onOpenBrowse()
                     TvNavDestination.SEARCH -> onOpenSearch()
                     TvNavDestination.SETTINGS -> onOpenSettings()
@@ -209,6 +239,12 @@ fun TvHomeScreen(
                 .padding(start = 24.dp, top = 24.dp, end = 28.dp, bottom = 32.dp),
             verticalArrangement = Arrangement.spacedBy(20.dp),
         ) {
+            TvExpressiveButton(
+                text = "Saved VODs",
+                onClick = onOpenSavedVods,
+                style = TvButtonStyle.Outlined,
+                size = TvButtonSize.Medium,
+            )
             LatestFollowedVodRow(
                 vods = state.latestFollowedVods,
                 loading = state.latestFollowedVodsLoading,
@@ -219,8 +255,9 @@ fun TvHomeScreen(
                 downAction = { focusFirstIn(if (hasViewedRow) viewedRowFocus else if (hasFollowedLiveRow) followedLiveRowFocus else liveRowFocus.takeIf { hasLiveRow }) },
             )
             ViewedVodRow(
-                state.viewedVods,
+                viewedVods,
                 onOpenVod,
+                savedVodSourceOffsets,
                 rowFocus = viewedRowFocus,
                 upAction = { focusFirstIn(latestRowFocus.takeIf { hasLatestRow }) },
                 downAction = { focusFirstIn(if (hasFollowedLiveRow) followedLiveRowFocus else liveRowFocus.takeIf { hasLiveRow }) },
@@ -346,6 +383,7 @@ private fun ContentRow(
 private fun ViewedVodRow(
     vods: List<AppSettingsStore.ViewedVod>,
     onOpenVod: (AppSettingsStore.ViewedVod) -> Unit,
+    sourceStartOffsets: Map<String, Long>,
     rowFocus: HomeRowFocusTarget,
     upAction: (() -> Unit)?,
     downAction: (() -> Unit)?,
@@ -386,6 +424,7 @@ private fun ViewedVodRow(
                         if (thumbnail.isNotBlank()) {
                             AsyncImage(model = thumbnail, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
                         }
+                        PositionVodThumbnail(vod, sourceStartOffsets[vod.id] ?: 0L)
                         Text(
                             text = viewedVodProgress(vod),
                             style = MaterialTheme.typography.labelLarge,
@@ -400,6 +439,41 @@ private fun ViewedVodRow(
                 }
             }
         }
+    }
+}
+
+/** Shows the storyboard frame at this history entry's saved playback position. */
+@Composable
+private fun PositionVodThumbnail(vod: AppSettingsStore.ViewedVod, sourceStartSeconds: Long) {
+    val vodRepository = koinInject<VodRepository>()
+    val httpClient = koinInject<HttpClient>()
+    var bitmap by remember(vod.id, vod.positionMs, sourceStartSeconds) { mutableStateOf<ImageBitmap?>(null) }
+
+    LaunchedEffect(vod.id, vod.positionMs, sourceStartSeconds, vodRepository, httpClient) {
+        bitmap = runCatching {
+            withContext(Dispatchers.IO) {
+                val storyboard = vodRepository.loadStoryboard(vod.id) ?: return@withContext null
+                val spec = storyboard.spec("low") ?: return@withContext null
+                val positionSeconds = (vod.positionMs / 1_000L + sourceStartSeconds).coerceAtLeast(0L)
+                val tile = StoryboardParser.tileAt(spec, storyboard.baseUrl, positionSeconds)
+                val bytes: ByteArray = httpClient.get(tile.imageUrl).body()
+                val sheet = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return@withContext null
+                val x = tile.srcXPx.coerceIn(0, sheet.width - 1)
+                val y = tile.srcYPx.coerceIn(0, sheet.height - 1)
+                val width = tile.tileWidthPx.coerceIn(1, sheet.width - x)
+                val height = tile.tileHeightPx.coerceIn(1, sheet.height - y)
+                Bitmap.createBitmap(sheet, x, y, width, height).asImageBitmap()
+            }
+        }.getOrNull()
+    }
+
+    bitmap?.let {
+        Image(
+            bitmap = it,
+            contentDescription = null,
+            modifier = androidx.compose.ui.Modifier.fillMaxSize(),
+            contentScale = ContentScale.Crop,
+        )
     }
 }
 

@@ -20,6 +20,9 @@ import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 
 // A half-written preferences file (a process killed mid-write, and the in-app
 // updater kills this one by definition) otherwise makes DataStore throw on
@@ -56,10 +59,12 @@ class AppSettingsStore(
     private val context: Context,
     private val secureTokenStore: SecureTokenStore,
     private val tokenHolder: TokenHolder,
+    private val smbCredentialStore: SmbCredentialStore,
 ) {
     data class ChatAppearance(
         val opacity: Float = 0f,
         val widthDp: Float = 360f,
+        val cornerRadiusDp: Float = 32f,
         val side: String = "right",
         /** Fractions of the available travel range; null keeps the legacy side-centered placement. */
         val positionXFraction: Float? = null,
@@ -71,6 +76,7 @@ class AppSettingsStore(
         val outlineColor: String = "black",
         val outlineWidthDp: Float = 0.75f,
         val useTwitchNameColors: Boolean = true,
+        val hideGiftSubs: Boolean = false,
     )
 
     data class ChatTranslation(
@@ -101,6 +107,7 @@ class AppSettingsStore(
         }
     }
 
+    @Serializable
     data class ViewedVod(
         val id: String,
         val channelLogin: String,
@@ -109,6 +116,13 @@ class AppSettingsStore(
         val durationSeconds: Long,
         val lastViewedEpochMs: Long,
         val positionMs: Long,
+    )
+
+    @Serializable
+    data class BrowserVodHistory(
+        val viewerId: String,
+        val importedAtMs: Long,
+        val vods: List<ViewedVod>,
     )
 
     private object Keys {
@@ -128,6 +142,7 @@ class AppSettingsStore(
         val COMPACT_MODE = booleanPreferencesKey("compact_mode")
         val TV_CHAT_OPACITY = floatPreferencesKey("tv_chat_opacity")
         val TV_CHAT_WIDTH = floatPreferencesKey("tv_chat_width")
+        val TV_CHAT_CORNER_RADIUS = floatPreferencesKey("tv_chat_corner_radius")
         val TV_CHAT_SIDE = stringPreferencesKey("tv_chat_side")
         val TV_CHAT_X = floatPreferencesKey("tv_chat_x_fraction")
         val TV_CHAT_Y = floatPreferencesKey("tv_chat_y_fraction")
@@ -138,6 +153,7 @@ class AppSettingsStore(
         val TV_CHAT_OUTLINE_COLOR = stringPreferencesKey("tv_chat_outline_color")
         val TV_CHAT_OUTLINE_WIDTH = floatPreferencesKey("tv_chat_outline_width")
         val TV_CHAT_TWITCH_NAME_COLORS = booleanPreferencesKey("tv_chat_twitch_name_colors")
+        val TV_CHAT_HIDE_GIFT_SUBS = booleanPreferencesKey("tv_chat_hide_gift_subs")
         val TV_SUBTITLE_SIZE = floatPreferencesKey("tv_subtitle_size_sp")
         val TV_SUBTITLE_TEXT_COLOR = stringPreferencesKey("tv_subtitle_text_color")
         val TV_SUBTITLE_BACKGROUND_OPACITY = floatPreferencesKey("tv_subtitle_background_opacity")
@@ -148,6 +164,11 @@ class AppSettingsStore(
         val TV_BROWSER_VOD_SYNC_ENABLED = booleanPreferencesKey("tv_browser_vod_sync_enabled")
         val TV_BROWSER_VOD_SYNC_CODE = stringPreferencesKey("tv_browser_vod_sync_code")
         val VIEWED_VOD_IDS = stringPreferencesKey("tv_viewed_vod_ids")
+        const val BROWSER_HISTORY_PREFIX = "tv_browser_vod_history_"
+        val SMB_HOST = stringPreferencesKey("tv_smb_host")
+        val SMB_SHARE = stringPreferencesKey("tv_smb_share")
+        val SMB_FOLDER = stringPreferencesKey("tv_smb_folder")
+        val SMB_USERNAME = stringPreferencesKey("tv_smb_username")
     }
 
     private data class TokenSnapshot(val accessToken: String, val username: String, val userId: String)
@@ -212,7 +233,8 @@ class AppSettingsStore(
                 kotlin.math.abs(storedOpacity - 0.62f) < 0.005f -> 0f
                 else -> storedOpacity.coerceIn(0f, 1f)
             },
-            widthDp = (prefs[Keys.TV_CHAT_WIDTH] ?: 360f).coerceIn(280f, 480f),
+            widthDp = (prefs[Keys.TV_CHAT_WIDTH] ?: 360f).coerceIn(200f, 480f),
+            cornerRadiusDp = (prefs[Keys.TV_CHAT_CORNER_RADIUS] ?: 32f).coerceIn(0f, 48f),
             side = if (prefs[Keys.TV_CHAT_SIDE] == "left") "left" else "right",
             positionXFraction = prefs[Keys.TV_CHAT_X]?.coerceIn(0f, 1f),
             positionYFraction = prefs[Keys.TV_CHAT_Y]?.coerceIn(0f, 1f),
@@ -221,8 +243,9 @@ class AppSettingsStore(
             fontFamily = prefs[Keys.TV_CHAT_FONT_FAMILY].orEmpty().takeIf { it in setOf("sans", "serif", "mono") } ?: "sans",
             textColor = prefs[Keys.TV_CHAT_TEXT_COLOR].orEmpty().takeIf { it in setOf("white", "warm", "yellow") } ?: "white",
             outlineColor = prefs[Keys.TV_CHAT_OUTLINE_COLOR].orEmpty().takeIf { it in setOf("black", "navy", "white") } ?: "black",
-            outlineWidthDp = (prefs[Keys.TV_CHAT_OUTLINE_WIDTH] ?: 0.75f).coerceIn(0f, 4f),
+            outlineWidthDp = (prefs[Keys.TV_CHAT_OUTLINE_WIDTH] ?: 0.75f).coerceIn(0f, 6f),
             useTwitchNameColors = prefs[Keys.TV_CHAT_TWITCH_NAME_COLORS] ?: true,
+            hideGiftSubs = prefs[Keys.TV_CHAT_HIDE_GIFT_SUBS] ?: false,
         )
     }
 
@@ -231,7 +254,8 @@ class AppSettingsStore(
         val next = transform(current)
         context.dataStore.edit { prefs ->
             prefs[Keys.TV_CHAT_OPACITY] = next.opacity.coerceIn(0f, 1f)
-            prefs[Keys.TV_CHAT_WIDTH] = next.widthDp.coerceIn(280f, 480f)
+            prefs[Keys.TV_CHAT_WIDTH] = next.widthDp.coerceIn(200f, 480f)
+            prefs[Keys.TV_CHAT_CORNER_RADIUS] = next.cornerRadiusDp.coerceIn(0f, 48f)
             prefs[Keys.TV_CHAT_SIDE] = if (next.side == "left") "left" else "right"
             next.positionXFraction?.let { prefs[Keys.TV_CHAT_X] = it.coerceIn(0f, 1f) }
                 ?: prefs.remove(Keys.TV_CHAT_X)
@@ -242,8 +266,9 @@ class AppSettingsStore(
             prefs[Keys.TV_CHAT_FONT_FAMILY] = next.fontFamily.takeIf { it in setOf("sans", "serif", "mono") } ?: "sans"
             prefs[Keys.TV_CHAT_TEXT_COLOR] = next.textColor.takeIf { it in setOf("white", "warm", "yellow") } ?: "white"
             prefs[Keys.TV_CHAT_OUTLINE_COLOR] = next.outlineColor.takeIf { it in setOf("black", "navy", "white") } ?: "black"
-            prefs[Keys.TV_CHAT_OUTLINE_WIDTH] = next.outlineWidthDp.coerceIn(0f, 4f)
+            prefs[Keys.TV_CHAT_OUTLINE_WIDTH] = next.outlineWidthDp.coerceIn(0f, 6f)
             prefs[Keys.TV_CHAT_TWITCH_NAME_COLORS] = next.useTwitchNameColors
+            prefs[Keys.TV_CHAT_HIDE_GIFT_SUBS] = next.hideGiftSubs
         }
     }
 
@@ -284,6 +309,27 @@ class AppSettingsStore(
                 ?: "en"
         }
     }
+
+    val smbShareSettings: Flow<SmbShareSettings> = context.dataStore.data.map { prefs ->
+        SmbShareSettings(
+            host = prefs[Keys.SMB_HOST] ?: "192.168.0.102",
+            share = prefs[Keys.SMB_SHARE] ?: "media",
+            folder = prefs[Keys.SMB_FOLDER] ?: "shared",
+            username = prefs[Keys.SMB_USERNAME].orEmpty(),
+        )
+    }
+
+    suspend fun saveSmbShareSettings(value: SmbShareSettings) {
+        context.dataStore.edit { prefs ->
+            prefs[Keys.SMB_HOST] = value.host.trim()
+            prefs[Keys.SMB_SHARE] = value.share.trim().trim('/')
+            prefs[Keys.SMB_FOLDER] = value.folder.trim().trim('/')
+            prefs[Keys.SMB_USERNAME] = value.username.trim()
+        }
+    }
+
+    fun smbPassword(): String = smbCredentialStore.password()
+    fun saveSmbPassword(password: String) = smbCredentialStore.savePassword(password)
 
     val vodSeekProfile: Flow<VodSeekProfile> = context.dataStore.data.map { prefs ->
         VodSeekProfile.fromKey(prefs[Keys.TV_VOD_SEEK_PROFILE])
@@ -356,6 +402,43 @@ class AppSettingsStore(
             prefs[longPreferencesKey("tv_viewed_vod_duration_${vod.id}")] = vod.durationSeconds.coerceAtLeast(0L)
             prefs[longPreferencesKey("tv_viewed_vod_time_${vod.id}")] = System.currentTimeMillis()
         }
+    }
+
+    /** Imported Twitch-browser history remains isolated by Twitch viewer ID. */
+    val browserVodHistories: Flow<List<BrowserVodHistory>> = context.dataStore.data.map { prefs ->
+        prefs.asMap().mapNotNull { (key, value) ->
+            val viewerId = key.name.takeIf { it.startsWith(Keys.BROWSER_HISTORY_PREFIX) }
+                ?.removePrefix(Keys.BROWSER_HISTORY_PREFIX)
+                ?.takeIf { id -> id.isNotBlank() && id.all(Char::isDigit) }
+                ?: return@mapNotNull null
+            val encoded = value as? String ?: return@mapNotNull null
+            runCatching { JSON.decodeFromString<BrowserVodHistory>(encoded) }
+                .getOrNull()
+                ?.takeIf { it.viewerId == viewerId }
+        }
+    }
+
+    suspend fun saveBrowserVodHistory(viewerId: String, vods: List<ViewedVod>) {
+        require(viewerId.isNotBlank() && viewerId.all(Char::isDigit))
+        val safeVods = vods.asSequence()
+            .filter { it.id.isNotBlank() && it.id.all(Char::isDigit) }
+            .distinctBy { it.id }
+            .take(MAX_BROWSER_HISTORY_VODS)
+            .toList()
+        val history = BrowserVodHistory(viewerId, System.currentTimeMillis(), safeVods)
+        context.dataStore.edit { prefs ->
+            prefs[stringPreferencesKey(Keys.BROWSER_HISTORY_PREFIX + viewerId)] = JSON.encodeToString(history)
+        }
+    }
+
+    suspend fun browserVodPosition(viewerId: String?, vodId: String): Long {
+        val safeViewerId = viewerId?.takeIf { it.isNotBlank() && it.all(Char::isDigit) } ?: return 0L
+        return browserVodHistories.first()
+            .firstOrNull { it.viewerId == safeViewerId }
+            ?.vods
+            ?.firstOrNull { it.id == vodId }
+            ?.positionMs
+            ?: 0L
     }
 
     suspend fun vodSubtitleUri(vodId: String): String? =
@@ -455,5 +538,7 @@ class AppSettingsStore(
 
         const val TAG = "AppSettingsStore"
         const val WEB_RESUME_LINK_TTL_MS = 15 * 60 * 1_000L
+        const val MAX_BROWSER_HISTORY_VODS = 100
+        val JSON = Json { ignoreUnknownKeys = true }
     }
 }

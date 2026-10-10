@@ -173,6 +173,7 @@ dependencies {
 
     implementation(libs.datastore.preferences)
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
+    implementation("com.hierynomus:smbj:0.13.0")
 
     implementation(libs.coil.compose)
     implementation(libs.coil.network)

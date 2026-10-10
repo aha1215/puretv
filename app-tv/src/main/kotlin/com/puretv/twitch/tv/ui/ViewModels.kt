@@ -133,6 +133,8 @@ class HomeViewModel(
     private var localViewedVods: List<AppSettingsStore.ViewedVod> = emptyList()
     private var importedViewedVods: List<AppSettingsStore.ViewedVod> = emptyList()
     private var importedViewedVodsUserId: String? = null
+    private var browserVodHistories: List<AppSettingsStore.BrowserVodHistory> = emptyList()
+    private var importedBrowserVods: List<AppSettingsStore.ViewedVod> = emptyList()
     private var activeTwitchUserId: String? = null
     private var accountSessionGeneration = 0
 
@@ -179,6 +181,7 @@ class HomeViewModel(
                     importedViewedVods = emptyList()
                     importedViewedVodsUserId = null
                     remoteHistoryUnavailableToken = null
+                    refreshBrowserHistoryForActiveAccount()
                     publishViewedVods()
                     if (nextUserId != null) refreshViewedVodPositions(force = true)
                 }
@@ -188,6 +191,13 @@ class HomeViewModel(
                     lastFollowedVodsRefreshAtMs = 0L
                     _state.update { it.copy(latestFollowedVods = emptyList(), latestFollowedVodsLoading = false) }
                 }
+            }
+        }
+        viewModelScope.launch {
+            settings.browserVodHistories.collect { histories ->
+                browserVodHistories = histories
+                refreshBrowserHistoryForActiveAccount()
+                publishViewedVods()
             }
         }
         viewModelScope.launch {
@@ -397,7 +407,16 @@ class HomeViewModel(
     }
 
     private fun publishViewedVods() {
-        _state.update { it.copy(viewedVods = mergeViewedVods(localViewedVods, importedViewedVods)) }
+        // The explicit browser import reflects the position/order seen on Twitch's
+        // web player, so keep its order first when both remote sources are present.
+        val remote = mergeViewedVods(importedBrowserVods, importedViewedVods)
+        _state.update { it.copy(viewedVods = mergeViewedVods(localViewedVods, remote)) }
+    }
+
+    private fun refreshBrowserHistoryForActiveAccount() {
+        val activeUserId = activeTwitchUserId
+        val history = browserVodHistories.firstOrNull { it.viewerId == activeUserId }
+        importedBrowserVods = history?.vods.orEmpty()
     }
 
     /**

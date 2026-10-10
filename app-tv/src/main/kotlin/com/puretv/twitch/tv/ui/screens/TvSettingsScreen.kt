@@ -2,6 +2,7 @@ package com.puretv.twitch.tv.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -44,6 +45,9 @@ import com.puretv.twitch.core.adblock.AdBlockStrategy
 import com.puretv.twitch.core.model.StreamQuality
 import com.puretv.twitch.core.repository.VodRepository
 import com.puretv.twitch.tv.data.AppSettingsStore
+import com.puretv.twitch.tv.data.BrowserVodSyncServer
+import com.puretv.twitch.tv.data.SmbShareSettings
+import com.puretv.twitch.tv.data.SmbVodDownloads
 import com.puretv.twitch.tv.ui.SettingsViewModel
 import com.puretv.twitch.tv.ui.components.ExpressiveIcons
 import com.puretv.twitch.tv.ui.components.TvButtonStyle
@@ -90,11 +94,22 @@ fun TvSettingsScreen(onBack: () -> Unit, viewModel: SettingsViewModel = koinView
     // method (mirrors desktop's SettingsContent.kt ColourPanel).
     val settingsStore = koinInject<AppSettingsStore>()
     val vodRepository = koinInject<VodRepository>()
+    val browserVodSyncServer = koinInject<BrowserVodSyncServer>()
+    val smbVodDownloads = koinInject<SmbVodDownloads>()
     val scope = rememberCoroutineScope()
     var showVodResumeProof by remember { mutableStateOf(false) }
+    var showBrowserHistorySync by remember { mutableStateOf(false) }
     val chatAppearance by settingsStore.chatAppearance.collectAsState(initial = AppSettingsStore.ChatAppearance())
     val chatTranslation by settingsStore.chatTranslation.collectAsState(initial = AppSettingsStore.ChatTranslation())
     val vodSeekProfile by settingsStore.vodSeekProfile.collectAsState(initial = AppSettingsStore.VodSeekProfile.Standard)
+    val smbSettings by settingsStore.smbShareSettings.collectAsState(initial = SmbShareSettings())
+    var smbHost by remember(smbSettings.host) { mutableStateOf(smbSettings.host) }
+    var smbShare by remember(smbSettings.share) { mutableStateOf(smbSettings.share) }
+    var smbFolder by remember(smbSettings.folder) { mutableStateOf(smbSettings.folder) }
+    var smbUsername by remember(smbSettings.username) { mutableStateOf(smbSettings.username) }
+    var smbPassword by remember { mutableStateOf("") }
+    var smbMessage by remember { mutableStateOf<String?>(null) }
+    var smbBusy by remember { mutableStateOf(false) }
 
     Row(Modifier.fillMaxSize().background(c.surface)) {
         Column(
@@ -179,6 +194,40 @@ fun TvSettingsScreen(onBack: () -> Unit, viewModel: SettingsViewModel = koinView
                     }
                     TvSettingsCategory.NETWORK -> {
                         TvPanel(padding = 24.dp) {
+                            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                                Text("SMB VOD downloads", style = MaterialTheme.typography.titleLarge, color = c.onSurface)
+                                Text("Share video bundles at \\\\${smbHost}\\${smbShare}\\${smbFolder}. Leave username blank for guest access. Password is stored encrypted; leave it blank to keep the saved password.", style = MaterialTheme.typography.bodyLarge, color = c.onSurfaceVariant)
+                                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                    SmbSettingField("Server", smbHost, { smbHost = it }, Modifier.weight(1f))
+                                    SmbSettingField("Share", smbShare, { smbShare = it }, Modifier.weight(1f))
+                                }
+                                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                    SmbSettingField("Folder", smbFolder, { smbFolder = it }, Modifier.weight(1f))
+                                    SmbSettingField("Username (optional)", smbUsername, { smbUsername = it }, Modifier.weight(1f))
+                                }
+                                SmbSettingField("Password (optional)", smbPassword, { smbPassword = it }, Modifier.fillMaxWidth(), password = true)
+                                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                    TvExpressiveButton(
+                                        text = if (smbBusy) "Connecting…" else "Save and test share",
+                                        enabled = !smbBusy,
+                                        onClick = {
+                                            smbBusy = true
+                                            scope.launch {
+                                                runCatching {
+                                                    settingsStore.saveSmbShareSettings(SmbShareSettings(smbHost, smbShare, smbFolder, smbUsername))
+                                                    if (smbPassword.isNotBlank()) settingsStore.saveSmbPassword(smbPassword)
+                                                    smbVodDownloads.testConnection()
+                                                }.onSuccess { smbMessage = it; smbPassword = "" }
+                                                    .onFailure { smbMessage = it.message ?: "Could not connect to SMB share" }
+                                                smbBusy = false
+                                            }
+                                        },
+                                    )
+                                }
+                                smbMessage?.let { Text(it, color = c.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium) }
+                            }
+                        }
+                        TvPanel(padding = 24.dp) {
                             AdBlockSection(
                                 enabled = state.settings.adBlockEnabled,
                                 onEnabledChange = viewModel::setAdBlockEnabled,
@@ -195,6 +244,21 @@ fun TvSettingsScreen(onBack: () -> Unit, viewModel: SettingsViewModel = koinView
                                     clearTwitchWebsiteCookies()
                                 },
                             )
+                        }
+                        TvPanel(padding = 24.dp) {
+                            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                                Text("Twitch browser history", style = MaterialTheme.typography.titleLarge, color = c.onSurface)
+                                Text(
+                                    "Import recent VOD checkpoints from Twitch in your phone's browser. " +
+                                        "This uses a one-time bookmarklet; a timestamped VOD link is available as a fallback.",
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = c.onSurfaceVariant,
+                                )
+                                TvExpressiveButton(
+                                    text = "Sync from Twitch browser",
+                                    onClick = { showBrowserHistorySync = true },
+                                )
+                            }
                         }
                     }
                     TvSettingsCategory.ACCOUNT -> {
@@ -224,6 +288,34 @@ fun TvSettingsScreen(onBack: () -> Unit, viewModel: SettingsViewModel = koinView
             settingsStore = settingsStore,
             vodRepository = vodRepository,
             onDismiss = { showVodResumeProof = false },
+        )
+    }
+    if (showBrowserHistorySync) {
+        BrowserVodHistorySyncDialog(
+            server = browserVodSyncServer,
+            onDismiss = { showBrowserHistorySync = false },
+        )
+    }
+}
+
+@Composable
+private fun SmbSettingField(
+    label: String,
+    value: String,
+    onValueChange: (String) -> Unit,
+    modifier: Modifier = Modifier,
+    password: Boolean = false,
+) {
+    val c = PureTvTvTheme.colors
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(5.dp)) {
+        Text(label, style = MaterialTheme.typography.labelLarge, color = c.onSurfaceVariant)
+        BasicTextField(
+            value = value,
+            onValueChange = onValueChange,
+            singleLine = true,
+            textStyle = MaterialTheme.typography.bodyLarge.copy(color = c.onSurface),
+            visualTransformation = if (password) androidx.compose.ui.text.input.PasswordVisualTransformation() else androidx.compose.ui.text.input.VisualTransformation.None,
+            modifier = Modifier.fillMaxWidth().background(c.surfaceContainer, RoundedCornerShape(10.dp)).padding(horizontal = 14.dp, vertical = 12.dp),
         )
     }
 }
@@ -342,7 +434,10 @@ private fun ChatAppearanceSection(
                         ChatOptionGroup(
                             "Text outline",
                             appearance.outlineWidthDp.toString(),
-                            listOf("0.0" to "Off", "1.0" to "Thin", "1.5" to "Medium", "2.5" to "Strong"),
+                            listOf(
+                                "0.0" to "Off", "0.75" to "Light", "1.0" to "Thin",
+                                "1.5" to "Medium", "2.5" to "Strong", "4.0" to "Heavier", "6.0" to "Maximum",
+                            ),
                         ) { value -> onAppearanceChange { it.copy(outlineWidthDp = value.toFloat()) } }
                     }
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -367,14 +462,30 @@ private fun ChatAppearanceSection(
                             listOf("right" to "Right", "left" to "Left"),
                         ) { value -> onAppearanceChange { it.copy(side = value) } }
                         ChatOptionGroup(
+                            "Panel corners",
+                            appearance.cornerRadiusDp.toString(),
+                            listOf(
+                                "0.0" to "Square", "8.0" to "Subtle", "16.0" to "Soft",
+                                "24.0" to "Rounded", "32.0" to "Current", "48.0" to "Extra round",
+                            ),
+                        ) { value -> onAppearanceChange { it.copy(cornerRadiusDp = value.toFloat()) } }
+                        ChatOptionGroup(
                             "Message fade",
                             appearance.fadeSeconds.toString(),
                             listOf("0" to "Off", "10" to "10 sec", "30" to "30 sec", "60" to "60 sec"),
                         ) { value -> onAppearanceChange { it.copy(fadeSeconds = value.toInt()) } }
                         ChatOptionGroup(
+                            "Gift subs",
+                            if (appearance.hideGiftSubs) "hide" else "show",
+                            listOf("show" to "Show", "hide" to "Hide"),
+                        ) { value -> onAppearanceChange { it.copy(hideGiftSubs = value == "hide") } }
+                        ChatOptionGroup(
                             "Chat width",
                             appearance.widthDp.toString(),
-                            listOf("280.0" to "Narrow", "360.0" to "Medium", "420.0" to "Wide", "480.0" to "Widest"),
+                            listOf(
+                                "200.0" to "Narrowest", "240.0" to "Narrow", "280.0" to "Compact",
+                                "360.0" to "Medium", "420.0" to "Wide", "480.0" to "Widest",
+                            ),
                         ) { value -> onAppearanceChange { it.copy(widthDp = value.toFloat()) } }
                         ChatOptionGroup(
                             "Translate chat",

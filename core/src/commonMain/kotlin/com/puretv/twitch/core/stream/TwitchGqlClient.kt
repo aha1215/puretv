@@ -316,7 +316,7 @@ internal const val PLAYBACK_ACCESS_TOKEN_QUERY =
 
 private const val RESUME_WATCHING_VIDEO_LIMIT = 100
 
-private const val RESUME_WATCHING_VIDEOS_QUERY =
+const val RESUME_WATCHING_VIDEOS_QUERY =
     "query ResumeWatchingVideosQuery(\$limit: Int!) { " +
         "currentUser { id viewedVideos(first: \$limit) { " +
         "edges { history { position } node { id } } } } }"

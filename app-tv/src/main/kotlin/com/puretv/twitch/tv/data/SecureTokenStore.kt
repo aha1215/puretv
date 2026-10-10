@@ -263,3 +263,22 @@ class SecureTokenStore(context: Context) {
         const val WEB_RESUME_LINK_CODE_LENGTH = 10
     }
 }
+
+/** SMB passwords are kept outside DataStore, alongside other encrypted credentials. */
+class SmbCredentialStore(context: Context) {
+    private val prefs by lazy {
+        val masterKey = MasterKey.Builder(context.applicationContext)
+            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+            .build()
+        EncryptedSharedPreferences.create(
+            context.applicationContext,
+            "puretv_tv_smb_credentials",
+            masterKey,
+            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
+        )
+    }
+
+    fun password(): String = prefs.getString("password", "").orEmpty()
+    fun savePassword(password: String) { prefs.edit().putString("password", password).apply() }
+}

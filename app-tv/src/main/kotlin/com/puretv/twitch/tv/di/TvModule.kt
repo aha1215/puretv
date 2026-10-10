@@ -9,6 +9,8 @@ import com.puretv.twitch.tv.data.AppSettingsStore
 import com.puretv.twitch.tv.data.BrowserVodSyncServer
 import com.puretv.twitch.tv.data.ChatslatorTranslationClient
 import com.puretv.twitch.tv.data.SecureTokenStore
+import com.puretv.twitch.tv.data.SmbCredentialStore
+import com.puretv.twitch.tv.data.SmbVodDownloads
 import com.puretv.twitch.tv.data.TokenRefresher
 import com.puretv.twitch.tv.data.db.PureTvTvDatabase
 import com.puretv.twitch.tv.player.TvPlayer
@@ -58,9 +60,11 @@ val tvModule = module {
     single { get<PureTvTvDatabase>().searchHistoryDao() }
 
     single { SecureTokenStore(get()) }
-    single { AppSettingsStore(get(), get(), get<TokenHolder>()) }
-    single { BrowserVodSyncServer(get()) }
+    single { SmbCredentialStore(get()) }
+    single { AppSettingsStore(get(), get(), get<TokenHolder>(), get()) }
+    single { BrowserVodSyncServer(get(), get()) }
     single { ChatslatorTranslationClient(get()) }
+    single { SmbVodDownloads(get(), get(), get(), get(), get()) }
     // Launch-time access-token refresh + identity backfill (fail-soft).
     single { TokenRefresher(get(), get(), get()) }
     // Followed-rail data for the Following destination: real Twitch follows
@@ -77,7 +81,7 @@ val tvModule = module {
     // the wiring identical to the phone app and avoids re-creating ExoPlayer
     // on configuration changes. TvPlayer(context, adBlockEngine, backupStreamResolver):
     // the last one powers the seamless ad-free backup player-type swap.
-    single { TvPlayer(get(), get(), get()) }
+    single { TvPlayer(get(), get(), get(), get()) }
 
     // --- ViewModels --------------------------------------------------------
     // HomeViewModel(streamRepo, userRepo, settings, vodRepo, cachedStreamDao, tokenRefresher):
@@ -95,8 +99,11 @@ val tvModule = module {
     viewModel { (channelLogin: String) -> StreamViewModel(channelLogin, get(), get(), get(), get(), get(), get(), get()) }
     viewModel { (channelLogin: String) -> ChannelViewModel(channelLogin, get(), get()) }
     viewModel { (channelLogin: String) -> TvVodListViewModel(channelLogin, get(), get()) }
-    viewModel { (channelLogin: String, vodId: String, title: String, thumbnailUrl: String, durationSeconds: Long) ->
-        TvVodPlayerViewModel(channelLogin, vodId, title, thumbnailUrl, durationSeconds, get(), get(), get(), get(), get(), get(), get())
+    viewModel { params ->
+        TvVodPlayerViewModel(
+            params.get(0), params.get(1), params.get(2), params.get(3), params.get(4), params.get(5),
+            get(), get(), get(), get(), get(), get(), get(), get(),
+        )
     }
     viewModel { SettingsViewModel(get()) }
     // Device Code Grant flow: (httpClient, settingsStore, userRepository).
