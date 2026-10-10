@@ -375,13 +375,11 @@ fun TvStreamScreen(
         TvSubtitleOverlay(subtitleCues, subtitleAppearance, Modifier.fillMaxSize())
         if (chatEditing) {
             TvChatEditorDialog(
-                settings = appSettings,
                 appearance = draftChatAppearance,
-                chatMessages = state.chatMessages,
                 fontSize = draftChatFontSize,
                 onFontSizeChange = { draftChatFontSize = it },
                 onAppearanceChange = { draftChatAppearance = it },
-                onSave = ::finishChatEditing,
+                previewDescription = "Previewing ${state.streamInfo?.title ?: state.channel?.displayName ?: channelLogin}",
             )
         }
     }

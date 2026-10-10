@@ -487,13 +487,11 @@ fun TvVodPlayerScreen(channelLogin: String, vodId: String, title: String, thumbn
         TvSubtitleOverlay(subtitleCues, subtitleAppearance, Modifier.fillMaxSize())
         if (chatEditing) {
             TvChatEditorDialog(
-                settings = appSettings,
                 appearance = draftChatAppearance,
-                chatMessages = state.chatMessages,
                 fontSize = draftChatFontSize,
                 onFontSizeChange = { draftChatFontSize = it },
                 onAppearanceChange = { draftChatAppearance = it },
-                onSave = ::finishChatEditing,
+                previewDescription = "Previewing $title at ${playerTime(playbackPosition / 1_000L)}",
             )
         }
         if (state.savedChatLoading && state.chatMessages.isEmpty() && chatVisible) {
