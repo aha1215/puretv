@@ -2,6 +2,7 @@ package com.puretv.twitch.core.repository
 
 import com.puretv.twitch.core.api.TwitchApiClient
 import com.puretv.twitch.core.api.VideoPage
+import com.puretv.twitch.core.model.VideoInfo
 import com.puretv.twitch.core.model.VideoType
 import com.puretv.twitch.core.stream.MasterPlaylistResult
 import com.puretv.twitch.core.stream.VodResolver
@@ -23,6 +24,9 @@ class VodRepository(
         if (userId.isBlank()) VideoPage(emptyList(), null)
         else apiClient.getVideos(userId, type, first, after)
 
+    suspend fun videosByIds(ids: List<String>): List<VideoInfo> =
+        apiClient.getVideosByIds(ids)
+
     suspend fun resolvePlayableVod(vodId: String, oauthToken: String? = null): MasterPlaylistResult =
         vodResolver.resolveVodMasterPlaylist(vodId, oauthToken)
 
@@ -31,6 +35,9 @@ class VodRepository(
 
     suspend fun playbackPositions(oauthToken: String?): Result<Map<String, Long>> =
         vodResolver.playbackPositions(oauthToken)
+
+    suspend fun playbackHistory(oauthToken: String?) =
+        vodResolver.playbackHistory(oauthToken)
 
     suspend fun updatePlaybackPosition(
         vodId: String,

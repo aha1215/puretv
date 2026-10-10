@@ -42,8 +42,8 @@ import androidx.tv.material3.Switch
 import androidx.tv.material3.Text
 import com.puretv.twitch.core.adblock.AdBlockStrategy
 import com.puretv.twitch.core.model.StreamQuality
+import com.puretv.twitch.core.repository.VodRepository
 import com.puretv.twitch.tv.data.AppSettingsStore
-import com.puretv.twitch.tv.data.BrowserVodSyncServer
 import com.puretv.twitch.tv.ui.SettingsViewModel
 import com.puretv.twitch.tv.ui.components.ExpressiveIcons
 import com.puretv.twitch.tv.ui.components.TvButtonStyle
@@ -89,18 +89,12 @@ fun TvSettingsScreen(onBack: () -> Unit, viewModel: SettingsViewModel = koinView
     // SettingsViewModel's own setters underneath, just without a dedicated
     // method (mirrors desktop's SettingsContent.kt ColourPanel).
     val settingsStore = koinInject<AppSettingsStore>()
+    val vodRepository = koinInject<VodRepository>()
     val scope = rememberCoroutineScope()
-    val webResumeSessionLinked by settingsStore.webResumeSessionLinked.collectAsState()
-    val pendingWebResumeLink by settingsStore.pendingWebResumeLink.collectAsState()
+    var showVodResumeProof by remember { mutableStateOf(false) }
     val chatAppearance by settingsStore.chatAppearance.collectAsState(initial = AppSettingsStore.ChatAppearance())
     val chatTranslation by settingsStore.chatTranslation.collectAsState(initial = AppSettingsStore.ChatTranslation())
     val vodSeekProfile by settingsStore.vodSeekProfile.collectAsState(initial = AppSettingsStore.VodSeekProfile.Standard)
-    val browserVodSync by settingsStore.browserVodSync.collectAsState(initial = AppSettingsStore.BrowserVodSync())
-    val browserSyncServer = koinInject<BrowserVodSyncServer>()
-    val browserSyncStatus by browserSyncServer.status.collectAsState()
-    val browserSyncAddresses = remember(browserVodSync.enabled, browserSyncStatus.running) {
-        if (browserVodSync.enabled) browserSyncServer.localIpv4Addresses() else emptyList()
-    }
 
     Row(Modifier.fillMaxSize().background(c.surface)) {
         Column(
@@ -193,16 +187,13 @@ fun TvSettingsScreen(onBack: () -> Unit, viewModel: SettingsViewModel = koinView
                             )
                         }
                         TvPanel(padding = 24.dp) {
-                            BrowserVodSyncSection(
-                                settings = browserVodSync,
-                                webResumeSessionLinked = webResumeSessionLinked,
-                                pendingWebResumeLink = pendingWebResumeLink,
-                                status = browserSyncStatus,
-                                addresses = browserSyncAddresses,
-                                onEnabledChange = { enabled -> scope.launch { settingsStore.setBrowserVodSyncEnabled(enabled) } },
-                                onRotateCode = { scope.launch { settingsStore.setBrowserVodSyncEnabled(true, rotateCode = true) } },
-                                onForgetWebSession = settingsStore::clearWebResumeToken,
-                                onCreateWebLinkCode = { settingsStore.createWebResumeLinkCode() },
+                            TwitchVodResumeSection(
+                                sessionLinked = !settingsStore.webResumeToken().isNullOrBlank(),
+                                onTest = { showVodResumeProof = true },
+                                onForget = {
+                                    settingsStore.clearWebResumeToken()
+                                    clearTwitchWebsiteCookies()
+                                },
                             )
                         }
                     }
@@ -228,6 +219,13 @@ fun TvSettingsScreen(onBack: () -> Unit, viewModel: SettingsViewModel = koinView
             }
         }
     }
+    if (showVodResumeProof) {
+        TwitchVodResumeProofDialog(
+            settingsStore = settingsStore,
+            vodRepository = vodRepository,
+            onDismiss = { showVodResumeProof = false },
+        )
+    }
 }
 
 private enum class TvSettingsCategory(
@@ -238,7 +236,7 @@ private enum class TvSettingsCategory(
     APPEARANCE("Appearance", "Choose the app palette.", ExpressiveIcons.Settings),
     PLAYBACK("Playback", "Stream quality and VOD seeking.", ExpressiveIcons.Play),
     CHAT("Chat", "Overlay, translation, and message style.", ExpressiveIcons.Chat),
-    NETWORK("Network & Ads", "Ad blocking and browser resume sync.", ExpressiveIcons.Shield),
+    NETWORK("Network & Ads", "Ad blocking and Twitch VOD resume.", ExpressiveIcons.Shield),
     ACCOUNT("Account & Updates", "Twitch account and app version.", ExpressiveIcons.Account),
 }
 
@@ -584,96 +582,37 @@ private fun VodSeekSection(
 }
 
 @Composable
-private fun BrowserVodSyncSection(
-    settings: AppSettingsStore.BrowserVodSync,
-    webResumeSessionLinked: Boolean,
-    pendingWebResumeLink: com.puretv.twitch.tv.data.SecureTokenStore.WebResumeLink?,
-    status: BrowserVodSyncServer.Status,
-    addresses: List<String>,
-    onEnabledChange: (Boolean) -> Unit,
-    onRotateCode: () -> Unit,
-    onForgetWebSession: () -> Unit,
-    onCreateWebLinkCode: () -> Unit,
+private fun TwitchVodResumeSection(
+    sessionLinked: Boolean,
+    onTest: () -> Unit,
+    onForget: () -> Unit,
 ) {
     val c = PureTvTvTheme.colors
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        Text("Desktop browser VOD resume", style = MaterialTheme.typography.titleLarge, color = c.onSurface)
+        Text("Twitch VOD resume", style = MaterialTheme.typography.titleLarge, color = c.onSurface)
         Text(
-            "Pair the browser extension to sync the active VOD between this TV and your computer. " +
-                "Link the Twitch website session once from the extension so the TV can read and update Twitch resume history while your computer is off. " +
-                "The farther playback position wins.",
+            "Sign into Twitch on this TV so it can read your recent watched VODs and resume checkpoints. " +
+                "The app uses Twitch's private website history query; Twitch can change this interface without notice. " +
+                "The farther local or Twitch checkpoint wins.",
             style = MaterialTheme.typography.bodyLarge,
             color = c.onSurfaceVariant,
         )
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Text("Allow paired browser sync", style = MaterialTheme.typography.bodyLarge, color = c.onSurface)
-            Switch(checked = settings.enabled, onCheckedChange = onEnabledChange)
-        }
-        if (webResumeSessionLinked) {
+        if (sessionLinked) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
                 Text(
-                    "Twitch website session linked · TV resume works without the computer.",
+                    "Twitch website session saved securely on this TV.",
                     style = MaterialTheme.typography.bodyLarge,
                     color = c.primary,
                 )
-                TvExpressiveButton(text = "Forget web session", onClick = onForgetWebSession, style = TvButtonStyle.Outlined)
+                TvExpressiveButton(text = "Forget TV session", onClick = onForget, style = TvButtonStyle.Outlined)
             }
         }
-        if (settings.enabled) {
-            val statusText = when {
-                status.running -> "Receiver ready · ${status.receivedCount} position updates received"
-                status.error != null -> "Receiver unavailable: ${status.error}"
-                else -> "Starting receiver…"
-            }
-            Text(statusText, style = MaterialTheme.typography.bodyLarge, color = if (status.error == null) c.primary else c.error)
-            if (addresses.isEmpty()) {
-                Text("No Wi-Fi or Ethernet IPv4 address found. Connect the TV and computer to the same home network.",
-                    style = MaterialTheme.typography.bodyLarge, color = c.onSurfaceVariant)
-            } else {
-                Text("TV address: " + addresses.joinToString { "http://$it:47821" },
-                    style = PureTvTvType.data, color = c.onSurface)
-            }
-            Text("Pairing code: ${settings.pairingCode}",
-                style = MaterialTheme.typography.titleLarge, color = c.onSurface, fontFamily = FontFamily.Monospace)
-            if (!webResumeSessionLinked) {
-                Text(
-                    "Twitch website session not linked · the TV currently uses its local resume position.",
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = c.onSurfaceVariant,
-                )
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                TvExpressiveButton(text = "Rotate pairing code", onClick = onRotateCode, style = TvButtonStyle.Outlined)
-                TvExpressiveButton(
-                    text = if (pendingWebResumeLink == null) "Create browser sign-in code" else "Refresh sign-in code",
-                    onClick = onCreateWebLinkCode,
-                    style = TvButtonStyle.Outlined,
-                )
-            }
-            if (pendingWebResumeLink != null) {
-                Text("10-character one-time code · expires in 15 minutes", style = MaterialTheme.typography.bodyLarge, color = c.onSurfaceVariant)
-                Text(
-                    pendingWebResumeLink.code,
-                    style = MaterialTheme.typography.headlineMedium,
-                    color = c.onSurface,
-                    fontFamily = FontFamily.Monospace,
-                )
-            }
-            Text(
-                "Install browser-extension/twitch-vod-sync, enter this TV address and the one-time code above, and choose Link Twitch website session once. " +
-                    "That action asks for browser cookie permission, encrypts the session for transfer over your local network, and saves it in Android encrypted storage. " +
-                    "The computer is not needed after linking. You can turn off paired browser sync afterward and keep direct TV resume.",
-                style = MaterialTheme.typography.bodyLarge,
-                color = c.onSurfaceVariant,
-            )
+        Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+            TvExpressiveButton(text = "Sign in and test on this TV", onClick = onTest)
         }
     }
 }

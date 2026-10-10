@@ -120,7 +120,13 @@ class TwitchGqlClient(
 
     /** Best-effort account-synced positions for the viewer's recent VODs, in milliseconds. */
     suspend fun fetchVodPlaybackPositions(oauthToken: String?): Result<Map<String, Long>> =
-        lookupVodPlaybackHistory(oauthToken).map { it.positions }
+        fetchVodPlaybackHistory(oauthToken).map { history ->
+            history.entries.associate { it.vodId to it.positionMs }
+        }
+
+    /** Recent Twitch VOD history in Twitch order, including the authenticated viewer ID. */
+    suspend fun fetchVodPlaybackHistory(oauthToken: String?): Result<VodPlaybackHistory> =
+        lookupVodPlaybackHistory(oauthToken)
 
     /** Best-effort write of the authenticated viewer's VOD resume point, in seconds. */
     suspend fun updateVodPlaybackPosition(
@@ -138,7 +144,10 @@ class TwitchGqlClient(
         // newer Twitch position. Fail closed if the private lookup is unavailable.
         val currentHistory = lookupVodPlaybackHistory(oauthToken).getOrNull() ?: return false
         val nextPositionSeconds = positionSeconds.coerceIn(0L, Int.MAX_VALUE.toLong())
-        val savedPositionSeconds = currentHistory.positions[vodId]?.div(1_000L)
+        val savedPositionSeconds = currentHistory.entries
+            .firstOrNull { it.vodId == vodId }
+            ?.positionMs
+            ?.div(1_000L)
         if (savedPositionSeconds != null && nextPositionSeconds < savedPositionSeconds) return false
         val viewerId = currentHistory.userId?.takeIf { id -> id.isNotBlank() && id.all(Char::isDigit) }
             ?: userId.takeIf { id -> id.isNotBlank() && id.all(Char::isDigit) }
@@ -175,7 +184,7 @@ class TwitchGqlClient(
         }
     }
 
-    private suspend fun lookupVodPlaybackHistory(oauthToken: String?): Result<ResumeWatchingHistory> {
+    private suspend fun lookupVodPlaybackHistory(oauthToken: String?): Result<VodPlaybackHistory> {
         if (oauthToken.isNullOrBlank()) {
             return Result.failure(IllegalArgumentException("An OAuth token is required"))
         }
@@ -210,13 +219,13 @@ class TwitchGqlClient(
                 )
             val viewedVideos = currentUser.viewedVideos
                 ?: return Result.failure(IllegalStateException("Twitch did not return viewed VOD history"))
-            val positions = viewedVideos.edges.mapNotNull { edge ->
+            val entries = viewedVideos.edges.mapNotNull { edge ->
                 val id = edge.node?.id?.takeIf(String::isNotBlank) ?: return@mapNotNull null
                 val positionMs = edge.history?.position?.coerceAtLeast(0L)?.times(1_000L)
                     ?: return@mapNotNull null
-                id to positionMs
-            }.toMap()
-            Result.success(ResumeWatchingHistory(currentUser.id, positions))
+                VodPlaybackHistoryEntry(id, positionMs)
+            }.distinctBy { it.vodId }
+            Result.success(VodPlaybackHistory(currentUser.id, entries))
         } catch (cancelled: kotlinx.coroutines.CancellationException) {
             throw cancelled
         } catch (error: Exception) {
@@ -366,7 +375,9 @@ private data class ResumeWatchingData(val currentUser: ResumeWatchingUser? = nul
 @Serializable
 private data class ResumeWatchingUser(val id: String? = null, val viewedVideos: ViewedVideosConnection? = null)
 
-private data class ResumeWatchingHistory(val userId: String?, val positions: Map<String, Long>)
+data class VodPlaybackHistory(val userId: String?, val entries: List<VodPlaybackHistoryEntry>)
+
+data class VodPlaybackHistoryEntry(val vodId: String, val positionMs: Long)
 
 @Serializable
 private data class ViewedVideosConnection(val edges: List<ViewedVideosEdge> = emptyList())

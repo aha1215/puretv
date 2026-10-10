@@ -17,6 +17,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -27,8 +28,10 @@ import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
@@ -43,9 +46,13 @@ import com.puretv.twitch.tv.player.TvPlayer
 import com.puretv.twitch.tv.data.AppSettingsStore
 import com.puretv.twitch.tv.ui.StreamViewModel
 import com.puretv.twitch.tv.ui.components.TvChatOverlay
+import com.puretv.twitch.tv.ui.components.TvChatEditDirection
+import com.puretv.twitch.tv.ui.components.TvChatEditMode
 import com.puretv.twitch.tv.ui.components.TvControlsOverlay
+import com.puretv.twitch.tv.ui.components.adjustTvChatAppearance
 import com.puretv.twitch.tv.ui.theme.PureTvTvTheme
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import org.koin.androidx.compose.koinViewModel
 import org.koin.compose.koinInject
 import org.koin.core.parameter.parametersOf
@@ -57,16 +64,14 @@ import org.koin.core.parameter.parametersOf
  *   • Starts fullscreen immediately, no chrome.
  *   • ANY D-pad key shows [TvControlsOverlay]; a 3-second inactivity timer
  *     hides it again (`controlsVisible` + [LaunchedEffect] restart-on-input).
- *   • DPAD_RIGHT (while controls are hidden / player has focus) opens chat;
- *     DPAD_LEFT closes chat and returns focus to the player.
+ *   • Chat can be opened directly from the player controls, then repositioned
+ *     or resized with the D-pad without interrupting playback.
  *   • FAST_FORWARD / REWIND step [StreamQuality] up/down (live streams can't
  *     seek — repurposed exactly as Section 7.4 specifies).
  *   • DPAD_CENTER / ENTER / PLAY_PAUSE toggle playback via [TvPlayer.togglePlayPause].
- *   • BACK dismisses the chat overlay first, then controls, then exits the
- *     screen (`onBack`) — the dismiss-overlay-before-exit hierarchy from
- *     Section 7.3's BACK-button rules, scoped to this screen's own state
- *     (the home/app-exit levels of that hierarchy live in `TvMainActivity`/
- *     the Activity's default back behavior).
+ *   • BACK saves and leaves chat editing when active; otherwise it exits the
+ *     screen (`onBack`) immediately, even when chat is visible. App-level back
+ *     handling lives in `TvMainActivity` and the Activity default behavior.
  *
  * The whole screen is wrapped in a single `focusable` + `onKeyEvent` host so
  * every remote key reaches this handler regardless of which (invisible, by
@@ -88,12 +93,60 @@ fun TvStreamScreen(
     val appSettings by settingsStore.flow.collectAsState(initial = com.puretv.twitch.core.model.AppSettings())
     val chatAppearance by settingsStore.chatAppearance.collectAsState(initial = AppSettingsStore.ChatAppearance())
     val rootFocusRequester = remember { FocusRequester() }
+    val scope = rememberCoroutineScope()
+    val configuration = LocalConfiguration.current
 
     var controlsVisible by remember { mutableStateOf(true) }
     var chatVisible by remember { mutableStateOf(false) }
+    var chatEditing by remember { mutableStateOf(false) }
+    var chatEditMode by remember { mutableStateOf(TvChatEditMode.Reposition) }
+    var chatSaving by remember { mutableStateOf(false) }
+    var draftChatAppearance by remember { mutableStateOf(chatAppearance) }
+    var draftChatFontSize by remember { mutableStateOf(appSettings.chatFontSize) }
     var isPlaying by remember { mutableStateOf(true) }
     var quality by remember { mutableStateOf(StreamQuality.SOURCE) }
     var lastInputAt by remember { mutableStateOf(0L) }
+
+    fun beginChatEditing() {
+        draftChatAppearance = if (
+            chatAppearance.positionXFraction == null &&
+            chatAppearance.positionYFraction == null &&
+            chatAppearance.heightFraction >= 0.98f
+        ) chatAppearance.copy(heightFraction = 0.7f) else chatAppearance
+        draftChatFontSize = appSettings.chatFontSize
+        chatVisible = true
+        chatEditing = true
+        chatEditMode = TvChatEditMode.Reposition
+        controlsVisible = false
+        scope.launch { androidx.compose.runtime.withFrameNanos { }; runCatching { rootFocusRequester.requestFocus() } }
+    }
+
+    fun finishChatEditing() {
+        if (chatSaving) return
+        chatSaving = true
+        val draft = draftChatAppearance
+        scope.launch {
+            try {
+                settingsStore.updateChatAppearance {
+                    it.copy(
+                        widthDp = draft.widthDp,
+                        side = draft.side,
+                        positionXFraction = draft.positionXFraction,
+                        positionYFraction = draft.positionYFraction,
+                        heightFraction = draft.heightFraction,
+                    )
+                }
+                settingsStore.update { it.copy(chatFontSize = draftChatFontSize) }
+                chatVisible = true
+                chatEditing = false
+                chatEditMode = TvChatEditMode.Reposition
+            } catch (_: Exception) {
+                // Keep the editor open so Back can retry if preferences fail to save.
+            } finally {
+                chatSaving = false
+            }
+        }
+    }
 
     LaunchedEffect(Unit) {
         runCatching { rootFocusRequester.requestFocus() }
@@ -119,8 +172,12 @@ fun TvStreamScreen(
     // Auto-hide: any input bumps `lastInputAt`; this effect restarts its 3s
     // countdown each time that happens and hides the chrome once it elapses
     // with no further input (Section 7.4: "auto-hide after 3 seconds").
-    LaunchedEffect(lastInputAt) {
+    LaunchedEffect(chatEditing, lastInputAt) {
         if (lastInputAt == 0L) return@LaunchedEffect
+        if (chatEditing) {
+            controlsVisible = false
+            return@LaunchedEffect
+        }
         controlsVisible = true
         delay(3_000)
         controlsVisible = false
@@ -162,26 +219,71 @@ fun TvStreamScreen(
             .background(PureTvTvTheme.colors.surfaceLowest)
             .focusRequester(rootFocusRequester)
             .focusable()
+            .onPreviewKeyEvent { event ->
+                if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                when {
+                    // Resolve Back before ordinary input so it cannot restart the
+                    // controls auto-hide timer and keep the player on screen.
+                    event.key == Key.Back -> {
+                        if (chatEditing) {
+                            finishChatEditing()
+                        } else if (controlsVisible) {
+                            controlsVisible = false
+                            scope.launch { androidx.compose.runtime.withFrameNanos { }; runCatching { rootFocusRequester.requestFocus() } }
+                        } else {
+                            onBack()
+                        }
+                        true
+                    }
+                    event.key == Key.DirectionUp && !controlsVisible && !chatEditing -> {
+                        chatVisible = !chatVisible
+                        true
+                    }
+                    else -> false
+                }
+            }
             .onKeyEvent { event ->
                 if (event.type != KeyEventType.KeyDown) return@onKeyEvent false
 
-                // BACK is resolved BEFORE bumping the activity timestamp. It must
-                // never count as "activity": the auto-hide effect re-shows the
-                // controls on every input, so if BACK bumped the timer it would
-                // resurrect the chrome and the viewer could never leave the player
-                // (the reported "back button does nothing in a stream" lockup).
-                // Order: dismiss the chat overlay if open, otherwise exit the screen.
-                if (event.key == Key.Back) {
-                    return@onKeyEvent if (chatVisible) {
-                        chatVisible = false
-                        true
-                    } else {
-                        onBack()
-                        true
-                    }
-                }
-
                 lastInputAt = System.currentTimeMillis()
+
+                if (chatEditing) {
+                    if (chatSaving) return@onKeyEvent true
+                    when (event.key) {
+                        Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> {
+                            chatEditMode = when (chatEditMode) {
+                                TvChatEditMode.Reposition -> TvChatEditMode.Resize
+                                TvChatEditMode.Resize -> TvChatEditMode.FontSize
+                                TvChatEditMode.FontSize -> TvChatEditMode.Reposition
+                            }
+                        }
+                        Key.DirectionLeft, Key.DirectionRight, Key.DirectionUp, Key.DirectionDown -> {
+                            val direction = when (event.key) {
+                                Key.DirectionLeft -> TvChatEditDirection.Left
+                                Key.DirectionRight -> TvChatEditDirection.Right
+                                Key.DirectionUp -> TvChatEditDirection.Up
+                                else -> TvChatEditDirection.Down
+                            }
+                            if (chatEditMode == TvChatEditMode.FontSize) {
+                                draftChatFontSize = when (direction) {
+                                    TvChatEditDirection.Up -> (draftChatFontSize + 1f).coerceAtMost(14f)
+                                    TvChatEditDirection.Down -> (draftChatFontSize - 1f).coerceAtLeast(8f)
+                                    else -> draftChatFontSize
+                                }
+                            } else {
+                                draftChatAppearance = adjustTvChatAppearance(
+                                    appearance = draftChatAppearance,
+                                    direction = direction,
+                                    resizeMode = chatEditMode == TvChatEditMode.Resize,
+                                    availableWidthDp = (configuration.screenWidthDp - 24).coerceAtLeast(280).toFloat(),
+                                    availableHeightDp = (configuration.screenHeightDp - 24).coerceAtLeast(240).toFloat(),
+                                )
+                            }
+                        }
+                        else -> Unit
+                    }
+                    return@onKeyEvent true
+                }
 
                 when (event.key) {
                     Key.DirectionRight -> {
@@ -212,6 +314,10 @@ fun TvStreamScreen(
                     Key.Menu -> {
                         chatVisible = !chatVisible
                         true
+                    }
+                    Key.DirectionDown -> {
+                        controlsVisible = true
+                        false
                     }
                     else -> {
                         // Any other D-pad/remote input still resets the auto-hide
@@ -280,6 +386,7 @@ fun TvStreamScreen(
                 tvPlayer.togglePlayPause()
                 isPlaying = tvPlayer.exoPlayer.isPlaying
             },
+            onEditChat = ::beginChatEditing,
             onSelectQuality = { quality = it },
             modifier = Modifier.fillMaxSize(),
         )
@@ -287,8 +394,10 @@ fun TvStreamScreen(
         TvChatOverlay(
             visible = chatVisible,
             messages = state.chatMessages,
-            appSettings = appSettings,
-            appearance = chatAppearance,
+            appSettings = if (chatEditing) appSettings.copy(chatFontSize = draftChatFontSize) else appSettings,
+            appearance = if (chatEditing) draftChatAppearance else chatAppearance,
+            editing = chatEditing,
+            editMode = chatEditMode,
             modifier = Modifier.fillMaxSize(),
         )
     }

@@ -15,7 +15,9 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -30,21 +32,21 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.focus.FocusDirection
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.input.key.KeyEventType
-import androidx.compose.ui.input.key.type
-import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
@@ -54,6 +56,7 @@ import androidx.tv.material3.Text
 import coil3.compose.AsyncImage
 import com.puretv.twitch.core.model.StreamInfo
 import com.puretv.twitch.core.model.VideoInfo
+import kotlinx.coroutines.launch
 import com.puretv.twitch.tv.data.AppSettingsStore
 import com.puretv.twitch.tv.ui.HomeViewModel
 import com.puretv.twitch.tv.ui.components.ExpressiveIcons
@@ -110,14 +113,44 @@ fun TvHomeScreen(
     val updateState by updateManager.state.collectAsState()
     val c = PureTvTvTheme.colors
     val drawerFocusRequester = remember { FocusRequester() }
+    val latestRowFocus = rememberHomeRowFocusTarget()
+    val viewedRowFocus = rememberHomeRowFocusTarget()
+    val followedLiveRowFocus = rememberHomeRowFocusTarget()
+    val liveRowFocus = rememberHomeRowFocusTarget()
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
     val focusManager = LocalFocusManager.current
     val lifecycleOwner = LocalLifecycleOwner.current
+    var homeContentFocusClaimed by remember { mutableStateOf(false) }
+    val hasLatestRow = state.isLoggedIn && state.latestFollowedVods.isNotEmpty()
+    val hasViewedRow = state.viewedVods.isNotEmpty()
+    val hasFollowedLiveRow = state.followedLive.isNotEmpty()
+    val hasLiveRow = state.topStreams.isNotEmpty()
+    val initialRowFocusTarget = when {
+        hasLatestRow -> latestRowFocus
+        hasViewedRow -> viewedRowFocus
+        hasFollowedLiveRow -> followedLiveRowFocus
+        hasLiveRow -> liveRowFocus
+        else -> null
+    }
 
-    // Keep launch focus in the selected navigation item. Focusing a shelf card
-    // before asynchronous Home sections finish loading can scroll the heading
-    // off-screen when a lower shelf arrives first.
-    LaunchedEffect(Unit) {
-        runCatching { drawerFocusRequester.requestFocus() }
+    fun focusFirstIn(target: HomeRowFocusTarget?) {
+        if (target == null) return
+        scope.launch {
+            target.listState.scrollToItem(0)
+            androidx.compose.runtime.withFrameNanos { }
+            runCatching { target.requester.requestFocus() }
+        }
+    }
+
+    // Start on the first available video card, not on the navigation rail. Home
+    // data arrives asynchronously, so wait until a real shelf card exists and
+    // claim focus only once to avoid stealing it after the user starts browsing.
+    LaunchedEffect(state.isLoggedIn, state.latestFollowedVods, state.viewedVods, state.followedLive, state.topStreams) {
+        if (homeContentFocusClaimed) return@LaunchedEffect
+        if (initialRowFocusTarget != null) {
+            focusFirstIn(initialRowFocusTarget)
+            homeContentFocusClaimed = true
+        }
     }
 
     // Keep "Live Now" current. The TV app used to load top streams exactly once
@@ -181,10 +214,16 @@ fun TvHomeScreen(
                 loading = state.latestFollowedVodsLoading,
                 isLoggedIn = state.isLoggedIn,
                 onOpenVod = onOpenLatestVod,
+                rowFocus = latestRowFocus,
+                upAction = null,
+                downAction = { focusFirstIn(if (hasViewedRow) viewedRowFocus else if (hasFollowedLiveRow) followedLiveRowFocus else liveRowFocus.takeIf { hasLiveRow }) },
             )
             ViewedVodRow(
                 state.viewedVods,
                 onOpenVod,
+                rowFocus = viewedRowFocus,
+                upAction = { focusFirstIn(latestRowFocus.takeIf { hasLatestRow }) },
+                downAction = { focusFirstIn(if (hasFollowedLiveRow) followedLiveRowFocus else liveRowFocus.takeIf { hasLiveRow }) },
             )
 
             if (state.followedLive.isNotEmpty()) {
@@ -192,12 +231,18 @@ fun TvHomeScreen(
                     title = "Following · Live now",
                     streams = state.followedLive,
                     onOpenStream = onOpenStream,
+                    rowFocus = followedLiveRowFocus,
+                    upAction = { focusFirstIn(if (hasViewedRow) viewedRowFocus else latestRowFocus.takeIf { hasLatestRow }) },
+                    downAction = { focusFirstIn(liveRowFocus.takeIf { hasLiveRow }) },
                 )
             }
             ContentRow(
                 title = "Live Channels",
                 streams = state.topStreams,
                 onOpenStream = onOpenStream,
+                rowFocus = liveRowFocus,
+                upAction = { focusFirstIn(if (hasFollowedLiveRow) followedLiveRowFocus else if (hasViewedRow) viewedRowFocus else latestRowFocus.takeIf { hasLatestRow }) },
+                downAction = null,
             )
 
             // Keep update actions visible without pushing the followed VOD shelf
@@ -272,18 +317,25 @@ private fun ContentRow(
     title: String,
     streams: List<StreamInfo>,
     onOpenStream: (String) -> Unit,
+    rowFocus: HomeRowFocusTarget,
+    upAction: (() -> Unit)?,
+    downAction: (() -> Unit)?,
 ) {
     if (streams.isEmpty()) return
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
         TvSectionHeading(title)
         LazyRow(
+            state = rowFocus.listState,
         horizontalArrangement = Arrangement.spacedBy(18.dp),
             contentPadding = PaddingValues(vertical = 8.dp),
         ) {
-            items(streams, key = { stream -> stream.id }) { stream ->
+            itemsIndexed(streams, key = { _, stream -> stream.id }) { index, stream ->
                 TvStreamCard(
                     stream = stream,
                     onClick = { onOpenStream(stream.userLogin) },
+                    modifier = Modifier.homeRowNavigation(upAction, downAction).then(
+                        if (index == 0) Modifier.focusRequester(rowFocus.requester) else Modifier,
+                    ),
                 )
             }
         }
@@ -294,19 +346,25 @@ private fun ContentRow(
 private fun ViewedVodRow(
     vods: List<AppSettingsStore.ViewedVod>,
     onOpenVod: (AppSettingsStore.ViewedVod) -> Unit,
+    rowFocus: HomeRowFocusTarget,
+    upAction: (() -> Unit)?,
+    downAction: (() -> Unit)?,
 ) {
     if (vods.isEmpty()) return
     val c = PureTvTvTheme.colors
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
         TvSectionHeading("Viewed VODs")
         LazyRow(
+            state = rowFocus.listState,
             horizontalArrangement = Arrangement.spacedBy(16.dp),
             contentPadding = PaddingValues(vertical = 8.dp),
         ) {
-            items(vods, key = { vod -> vod.id }) { vod ->
+            itemsIndexed(vods, key = { _, vod -> vod.id }) { index, vod ->
                 val interaction = remember(vod.id) { MutableInteractionSource() }
                 Column(
                     Modifier
+                        .homeRowNavigation(upAction, downAction)
+                        .then(if (index == 0) Modifier.focusRequester(rowFocus.requester) else Modifier)
                         .width(300.dp)
                         .clip(RoundedCornerShape(18.dp))
                         .tvFocusClickable(
@@ -351,6 +409,9 @@ private fun LatestFollowedVodRow(
     loading: Boolean,
     isLoggedIn: Boolean,
     onOpenVod: (VideoInfo) -> Unit,
+    rowFocus: HomeRowFocusTarget,
+    upAction: (() -> Unit)?,
+    downAction: (() -> Unit)?,
 ) {
     if (!isLoggedIn) return
     val c = PureTvTvTheme.colors
@@ -381,13 +442,16 @@ private fun LatestFollowedVodRow(
             return@Column
         }
         LazyRow(
+            state = rowFocus.listState,
             horizontalArrangement = Arrangement.spacedBy(16.dp),
             contentPadding = PaddingValues(vertical = 8.dp),
         ) {
-            items(sortedVods, key = { vod -> vod.id }) { vod ->
+            itemsIndexed(sortedVods, key = { _, vod -> vod.id }) { index, vod ->
                 val interaction = remember(vod.id) { MutableInteractionSource() }
                 Column(
                     modifier = Modifier
+                        .homeRowNavigation(upAction, downAction)
+                        .then(if (index == 0) Modifier.focusRequester(rowFocus.requester) else Modifier)
                         .width(300.dp)
                         .clip(RoundedCornerShape(18.dp))
                         .tvFocusClickable(
@@ -535,3 +599,26 @@ private fun templatedUrl(url: String, width: Int, height: Int): String =
         .replace("%{height}", height.toString())
         .replace("{width}", width.toString())
         .replace("{height}", height.toString())
+
+private class HomeRowFocusTarget(
+    val requester: FocusRequester,
+    val listState: LazyListState,
+)
+
+@Composable
+private fun rememberHomeRowFocusTarget(): HomeRowFocusTarget = HomeRowFocusTarget(
+    requester = remember { FocusRequester() },
+    listState = rememberLazyListState(),
+)
+
+private fun Modifier.homeRowNavigation(
+    upAction: (() -> Unit)?,
+    downAction: (() -> Unit)?,
+): Modifier = onPreviewKeyEvent { event ->
+    if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+    when (event.key) {
+        Key.DirectionUp -> upAction?.let { it(); true } ?: false
+        Key.DirectionDown -> downAction?.let { it(); true } ?: false
+        else -> false
+    }
+}

@@ -128,19 +128,33 @@ class SecureTokenStore(context: Context) {
     fun username(): String? = read(KEY_USERNAME)
     fun userId(): String? = read(KEY_USER_ID)
     fun webResumeToken(): String? = read(KEY_WEB_RESUME)
+    fun webResumeUserId(): String? = read(KEY_WEB_RESUME_USER_ID)
 
-    fun saveWebResumeToken(token: String) {
+    fun saveWebResumeToken(token: String, userId: String? = null) {
         val store = prefs
-        if (store == null) memory[KEY_WEB_RESUME] = token
-        else store.edit().putString(KEY_WEB_RESUME, token).apply()
+        if (store == null) {
+            memory[KEY_WEB_RESUME] = token
+            if (userId.isNullOrBlank()) memory.remove(KEY_WEB_RESUME_USER_ID)
+            else memory[KEY_WEB_RESUME_USER_ID] = userId
+        } else {
+            store.edit().apply {
+                putString(KEY_WEB_RESUME, token)
+                if (userId.isNullOrBlank()) remove(KEY_WEB_RESUME_USER_ID)
+                else putString(KEY_WEB_RESUME_USER_ID, userId)
+            }.apply()
+        }
         _webResumeSessionLinked.value = token.isNotBlank()
         _webResumeSessionRevision.value += 1L
     }
 
     fun clearWebResumeToken() {
         val store = prefs
-        if (store == null) memory.remove(KEY_WEB_RESUME)
-        else store.edit().remove(KEY_WEB_RESUME).apply()
+        if (store == null) {
+            memory.remove(KEY_WEB_RESUME)
+            memory.remove(KEY_WEB_RESUME_USER_ID)
+        } else {
+            store.edit().remove(KEY_WEB_RESUME).remove(KEY_WEB_RESUME_USER_ID).apply()
+        }
         _webResumeSessionLinked.value = false
         _webResumeSessionRevision.value += 1L
     }
@@ -243,6 +257,7 @@ class SecureTokenStore(context: Context) {
         const val KEY_USERNAME = "username"
         const val KEY_USER_ID = "user_id"
         const val KEY_WEB_RESUME = "web_resume_session_token"
+        const val KEY_WEB_RESUME_USER_ID = "web_resume_user_id"
         const val KEY_WEB_LINK_CODE = "web_resume_link_code"
         const val KEY_WEB_LINK_EXPIRY = "web_resume_link_expiry"
         const val WEB_RESUME_LINK_CODE_LENGTH = 10

@@ -5,26 +5,26 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.FlowRow
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.text.InlineTextContent
+import androidx.compose.foundation.text.appendInlineContent
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -34,7 +34,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Fill
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -44,12 +43,19 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.Placeholder
+import androidx.compose.ui.text.PlaceholderVerticalAlign
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.em
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import coil3.compose.AsyncImage
@@ -59,6 +65,7 @@ import com.puretv.twitch.core.model.AppSettings
 import com.puretv.twitch.core.model.Badge
 import com.puretv.twitch.core.model.ChatMessage
 import com.puretv.twitch.core.model.MessagePart
+import com.puretv.twitch.core.stream.decodeHtmlEntities
 import com.puretv.twitch.tv.data.AppSettingsStore
 import com.puretv.twitch.tv.R
 import com.puretv.twitch.tv.ui.theme.PureTvTvTheme
@@ -70,6 +77,40 @@ import java.time.format.DateTimeFormatter
 
 private val ClockFormatter = DateTimeFormatter.ofPattern("HH:mm")
 
+enum class TvChatEditDirection { Left, Right, Up, Down }
+enum class TvChatEditMode { Reposition, Resize, FontSize }
+
+fun adjustTvChatAppearance(
+    appearance: AppSettingsStore.ChatAppearance,
+    direction: TvChatEditDirection,
+    resizeMode: Boolean,
+    availableWidthDp: Float,
+    availableHeightDp: Float,
+): AppSettingsStore.ChatAppearance {
+    val width = appearance.widthDp.coerceAtMost(availableWidthDp)
+    val height = availableHeightDp * appearance.heightFraction.coerceIn(0.2f, 0.98f)
+    val x = appearance.positionXFraction ?: if (appearance.side == "left") 0f else 1f
+    val y = appearance.positionYFraction ?: 0.5f
+
+    if (resizeMode) {
+        return when (direction) {
+            TvChatEditDirection.Left -> appearance.copy(widthDp = (width - 24f).coerceAtLeast(280f))
+            TvChatEditDirection.Right -> appearance.copy(widthDp = (width + 24f).coerceAtMost(minOf(480f, availableWidthDp)))
+            TvChatEditDirection.Up -> appearance.copy(heightFraction = (appearance.heightFraction + 24f / availableHeightDp).coerceAtMost(0.98f))
+            TvChatEditDirection.Down -> appearance.copy(heightFraction = (appearance.heightFraction - 24f / availableHeightDp).coerceAtLeast(0.2f))
+        }
+    }
+
+    val maxX = (availableWidthDp - width).coerceAtLeast(0f)
+    val maxY = (availableHeightDp - height).coerceAtLeast(0f)
+    return when (direction) {
+        TvChatEditDirection.Left -> appearance.copy(positionXFraction = (x - if (maxX > 0f) 24f / maxX else 0f).coerceAtLeast(0f))
+        TvChatEditDirection.Right -> appearance.copy(positionXFraction = (x + if (maxX > 0f) 24f / maxX else 0f).coerceAtMost(1f))
+        TvChatEditDirection.Up -> appearance.copy(positionYFraction = (y - if (maxY > 0f) 24f / maxY else 0f).coerceAtLeast(0f))
+        TvChatEditDirection.Down -> appearance.copy(positionYFraction = (y + if (maxY > 0f) 24f / maxY else 0f).coerceAtMost(1f))
+    }
+}
+
 /** Existing right-side chat rail, configurable for the ten-foot player. */
 @Composable
 fun TvChatOverlay(
@@ -77,6 +118,8 @@ fun TvChatOverlay(
     messages: List<ChatMessage>,
     appSettings: AppSettings,
     appearance: AppSettingsStore.ChatAppearance,
+    editing: Boolean = false,
+    editMode: TvChatEditMode = TvChatEditMode.Reposition,
     modifier: Modifier = Modifier,
 ) {
     val c = PureTvTvTheme.colors
@@ -104,25 +147,42 @@ fun TvChatOverlay(
         exit = slideOutHorizontally(targetOffsetX = { if (appearance.side == "left") -it else it }),
         modifier = modifier,
     ) {
-        Box(
-            modifier = Modifier.fillMaxSize().padding(12.dp),
-            contentAlignment = if (appearance.side == "left") Alignment.CenterStart else Alignment.CenterEnd,
-        ) {
+        BoxWithConstraints(modifier = Modifier.fillMaxSize().padding(12.dp)) {
+            val panelWidth = appearance.widthDp.dp.coerceAtMost(maxWidth)
+            val panelHeight = (maxHeight * appearance.heightFraction.coerceIn(0.2f, 0.98f)).coerceAtMost(maxHeight)
+            val maxLeft = (maxWidth - panelWidth).coerceAtLeast(0.dp)
+            val maxTop = (maxHeight - panelHeight).coerceAtLeast(0.dp)
+            val xFraction = appearance.positionXFraction ?: if (appearance.side == "left") 0f else 1f
+            val yFraction = appearance.positionYFraction ?: 0.5f
+            val left = maxLeft * xFraction.coerceIn(0f, 1f)
+            val top = maxTop * yFraction.coerceIn(0f, 1f)
+            val editHint = when (editMode) {
+                TvChatEditMode.Reposition -> "MOVE  ·  Arrows reposition  ·  Center next mode  ·  Back save"
+                TvChatEditMode.Resize -> "PANEL SIZE  ·  ← → width  ·  ↑ ↓ height  ·  Center next mode  ·  Back save"
+                TvChatEditMode.FontSize -> "TEXT + EMOTE SIZE ${appSettings.chatFontSize.toInt()} sp  ·  ↑ larger  ·  ↓ smaller  ·  Center next mode  ·  Back save"
+            }
+
             Column(
                 modifier = Modifier
-                    .fillMaxHeight(0.98f)
-                    .width(appearance.widthDp.dp)
-                    .widthIn(max = 480.dp)
+                    .offset(x = left, y = top)
+                    .width(panelWidth)
+                    .height(panelHeight)
                     .clip(shapes.paneShape)
                     .background(c.surfaceContainer.copy(alpha = appearance.opacity))
+                    .then(if (editing) Modifier.border(2.dp, c.primary, shapes.paneShape) else Modifier)
                     .padding(5.dp),
                 verticalArrangement = Arrangement.spacedBy(1.dp),
             ) {
-                Text(
-                    "CHAT  ·  MENU to hide",
-                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
-                    color = c.onSurfaceVariant,
-                )
+                if (editing) {
+                    Text(
+                        text = editHint,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = c.onSurface,
+                        modifier = Modifier.fillMaxWidth()
+                            .background(c.surfaceContainer.copy(alpha = 0.96f), shapes.mdShape)
+                            .padding(horizontal = 6.dp, vertical = 5.dp),
+                    )
+                }
                 LazyColumn(state = listState, verticalArrangement = Arrangement.spacedBy(1.dp)) {
                     items(messages, key = { it.id }) { message ->
                         val ageSeconds = ((now - message.timestamp).coerceAtLeast(0L) / 1_000L).toInt()
@@ -142,7 +202,6 @@ fun TvChatOverlay(
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun TvChatMessageRow(
     message: ChatMessage,
@@ -163,94 +222,202 @@ private fun TvChatMessageRow(
             Instant.ofEpochMilli(message.timestamp).atZone(ZoneId.systemDefault()).format(ClockFormatter)
         }.getOrDefault("")
     }
+    val (body, inlineContent) = remember(
+        message.id,
+        message.parsedParts,
+        message.translatedMessage,
+        message.displayName,
+        message.badges,
+        appSettings.showBadges,
+        appSettings.chatTimestamps,
+        appSettings.showBttvEmotes,
+        appSettings.showFfzEmotes,
+        appSettings.show7tvEmotes,
+        nameColor,
+        c.onSurfaceVariant,
+        timestamp,
+        imageLoader,
+    ) {
+        buildTvChatBody(
+            message = message,
+            appSettings = appSettings,
+            nameColor = nameColor,
+            timestampColor = c.onSurfaceVariant,
+            timestamp = timestamp,
+            imageLoader = imageLoader,
+        )
+    }
 
-    Column(
+    OutlinedChatAnnotatedText(
+        text = body,
+        inlineContent = inlineContent,
+        style = compactChatTextStyle(appSettings.chatFontSize, appearance.fontFamily),
+        color = messageColor,
+        appearance = appearance,
+        maxLines = 2,
+        overflow = TextOverflow.Ellipsis,
         modifier = Modifier
             .fillMaxWidth()
             .graphicsLayer { this.alpha = alpha }
             .clip(shapes.mdShape)
             .background(if (message.mentionsSelf) c.primaryContainer else Color.Transparent)
             .padding(horizontal = 4.dp, vertical = 1.dp),
-        verticalArrangement = Arrangement.spacedBy(0.dp),
-    ) {
-        FlowRow(
-            modifier = Modifier.heightIn(max = 32.dp).clipToBounds(),
-            horizontalArrangement = Arrangement.spacedBy(3.dp),
-            verticalArrangement = Arrangement.spacedBy(0.dp),
-        ) {
-            if (!message.isSystem) {
-                OutlinedChatText(
-                    text = message.displayName,
-                    style = chatNameTextStyle(appSettings.chatFontSize, appearance.fontFamily),
-                    color = nameColor,
-                    appearance = appearance,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                if (appSettings.chatTimestamps) {
-                    Text(text = timestamp, style = PureTvTvType.dataSmall.copy(fontSize = 10.sp), color = c.onSurfaceVariant)
-                }
-                if (appSettings.showBadges) {
-                    message.badges.forEach { badge ->
-                        ChatBadge(badge.setId)
-                    }
+    )
+}
+
+private fun buildTvChatBody(
+    message: ChatMessage,
+    appSettings: AppSettings,
+    nameColor: Color,
+    timestampColor: Color,
+    timestamp: String,
+    imageLoader: ImageLoader,
+): Pair<AnnotatedString, Map<String, InlineTextContent>> {
+    val inline = LinkedHashMap<String, InlineTextContent>()
+    val text = buildAnnotatedString {
+        if (!message.isSystem) {
+            if (appSettings.chatTimestamps && timestamp.isNotBlank()) {
+                withStyle(SpanStyle(color = timestampColor, fontSize = 10.sp)) {
+                    append(timestamp)
+                    append("  ")
                 }
             }
-            val translatedMessage = message.translatedMessage
-            if (translatedMessage != null) {
-                OutlinedChatText(
-                    translatedMessage,
-                    style = compactChatTextStyle(appSettings.chatFontSize, appearance.fontFamily),
-                    color = messageColor,
-                    appearance = appearance,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            } else if (message.parsedParts.isEmpty()) {
-                OutlinedChatText(
-                    message.message,
-                    style = compactChatTextStyle(appSettings.chatFontSize, appearance.fontFamily),
-                    color = messageColor,
-                    appearance = appearance,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            } else {
-                message.parsedParts.forEach { part ->
-                    when (part) {
-                        is MessagePart.Text -> OutlinedChatText(
-                            part.content,
-                            style = compactChatTextStyle(appSettings.chatFontSize, appearance.fontFamily),
-                            color = messageColor,
-                            appearance = appearance,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        is MessagePart.TwitchEmote -> {
-                            EmoteImage("https://static-cdn.jtvnw.net/emoticons/v2/${part.id}/default/dark/2.0", part.name, imageLoader)
+            if (appSettings.showBadges) {
+                message.badges.forEachIndexed { index, badge ->
+                    if (appendTvBadge(index, badge.setId, inline)) append(' ')
+                }
+            }
+            withStyle(SpanStyle(color = nameColor, fontWeight = FontWeight.Bold)) {
+                append(message.displayName)
+            }
+            append(": ")
+        }
+
+        val translatedMessage = message.translatedMessage
+        if (translatedMessage != null) {
+            append(decodeHtmlEntities(translatedMessage))
+        } else if (message.parsedParts.isEmpty()) {
+            append(message.message)
+        } else {
+            message.parsedParts.forEachIndexed { index, part ->
+                when (part) {
+                    is MessagePart.Text -> append(part.content)
+                    is MessagePart.TwitchEmote -> appendTvEmote(
+                        key = "tw_${part.id}_$index",
+                        name = part.name,
+                        url = "https://static-cdn.jtvnw.net/emoticons/v2/${part.id}/default/dark/2.0",
+                        overlays = emptyList(),
+                        inline = inline,
+                        imageLoader = imageLoader,
+                    )
+                    is MessagePart.ThirdPartyEmote -> {
+                        val enabled = when (part.provider) {
+                            com.puretv.twitch.core.model.EmoteProvider.BTTV -> appSettings.showBttvEmotes
+                            com.puretv.twitch.core.model.EmoteProvider.FFZ -> appSettings.showFfzEmotes
+                            com.puretv.twitch.core.model.EmoteProvider.SEVENTV -> appSettings.show7tvEmotes
+                            com.puretv.twitch.core.model.EmoteProvider.TWITCH -> true
                         }
-                        is MessagePart.ThirdPartyEmote -> {
-                            val enabled = when (part.provider) {
-                                com.puretv.twitch.core.model.EmoteProvider.BTTV -> appSettings.showBttvEmotes
-                                com.puretv.twitch.core.model.EmoteProvider.FFZ -> appSettings.showFfzEmotes
-                                com.puretv.twitch.core.model.EmoteProvider.SEVENTV -> appSettings.show7tvEmotes
-                                com.puretv.twitch.core.model.EmoteProvider.TWITCH -> true
-                            }
-                            if (enabled) EmoteImage(part.url, part.name, imageLoader)
-                            else OutlinedChatText(
-                                part.name,
-                                style = compactChatTextStyle(appSettings.chatFontSize, appearance.fontFamily),
-                                color = messageColor,
-                                appearance = appearance,
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        }
+                        if (enabled) appendTvEmote(
+                            key = "tp_${part.name}_$index",
+                            name = part.name,
+                            url = part.url,
+                            overlays = part.overlays,
+                            inline = inline,
+                            imageLoader = imageLoader,
+                        ) else append(part.name)
                     }
                 }
             }
         }
+    }
+    return text to inline
+}
+
+private fun AnnotatedString.Builder.appendTvBadge(
+    index: Int,
+    setId: String,
+    inline: MutableMap<String, InlineTextContent>,
+): Boolean {
+    val (mark, color) = chatBadgeStyle(setId) ?: return false
+    val key = "badge_$index"
+    appendInlineContent(key, mark.ifBlank { " " })
+    inline[key] = InlineTextContent(Placeholder(0.9.em, 0.9.em, PlaceholderVerticalAlign.Center)) {
+        Text(mark, style = PureTvTvType.badge.copy(fontSize = 9.sp, lineHeight = 10.sp), color = color)
+    }
+    return true
+}
+
+private fun AnnotatedString.Builder.appendTvEmote(
+    key: String,
+    name: String,
+    url: String,
+    overlays: List<com.puretv.twitch.core.model.EmoteLayer>,
+    inline: MutableMap<String, InlineTextContent>,
+    imageLoader: ImageLoader,
+) {
+    appendInlineContent(key, name.ifBlank { " " })
+    inline[key] = InlineTextContent(
+        placeholder = Placeholder(2.em, 2.em, PlaceholderVerticalAlign.Center),
+    ) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            AsyncImage(
+                model = url,
+                contentDescription = name,
+                imageLoader = imageLoader,
+                contentScale = ContentScale.Fit,
+                modifier = Modifier.fillMaxSize(),
+            )
+            overlays.forEach { overlay ->
+                AsyncImage(
+                    model = overlay.url,
+                    contentDescription = overlay.name,
+                    imageLoader = imageLoader,
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun OutlinedChatAnnotatedText(
+    text: AnnotatedString,
+    inlineContent: Map<String, InlineTextContent>,
+    style: TextStyle,
+    color: Color,
+    appearance: AppSettingsStore.ChatAppearance,
+    maxLines: Int,
+    overflow: TextOverflow,
+    modifier: Modifier = Modifier,
+) {
+    val strokeWidth = with(LocalDensity.current) { appearance.outlineWidthDp.dp.toPx() }
+    val outlineColor = configuredOutlineColor(appearance.outlineColor)
+    val outlineText = remember(text, outlineColor) {
+        AnnotatedString.Builder(text).apply {
+            addStyle(SpanStyle(color = outlineColor), 0, text.length)
+        }.toAnnotatedString()
+    }
+    Box(modifier) {
+        if (strokeWidth > 0f) {
+            Text(
+                // Override colored username spans during the outline pass. Strokes in
+                // bright Twitch colors close up the small bold glyphs and obscure names.
+                text = outlineText,
+                inlineContent = inlineContent,
+                style = style.copy(color = outlineColor, drawStyle = Stroke(width = strokeWidth)),
+                maxLines = maxLines,
+                overflow = overflow,
+                modifier = Modifier.clearAndSetSemantics {},
+            )
+        }
+        Text(
+            text = text,
+            inlineContent = inlineContent,
+            style = style.copy(color = color, drawStyle = Fill),
+            maxLines = maxLines,
+            overflow = overflow,
+        )
     }
 }
 
@@ -305,7 +472,6 @@ fun TvChatStylePreview(
                         .padding(horizontal = 5.dp, vertical = 4.dp),
                     verticalArrangement = Arrangement.spacedBy(1.dp),
                 ) {
-                    Text("CHAT", style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp), color = c.onSurfaceVariant)
                     messages.forEach { message ->
                         val ageSeconds = ((now - message.timestamp).coerceAtLeast(0L) / 1_000L).toInt()
                         val rowAlpha = if (appearance.fadeSeconds == 0) 1f
@@ -331,65 +497,22 @@ fun TvChatStylePreview(
     }
 }
 
-@Composable
-private fun OutlinedChatText(
-    text: String,
-    style: TextStyle,
-    color: Color,
-    appearance: AppSettingsStore.ChatAppearance,
-    maxLines: Int,
-    overflow: TextOverflow,
-    fontWeight: FontWeight? = null,
-) {
-    val strokeWidth = with(LocalDensity.current) { appearance.outlineWidthDp.dp.toPx() }
-    Box {
-        if (strokeWidth > 0f) {
-            Text(
-                text = text,
-                style = style.copy(color = configuredOutlineColor(appearance.outlineColor), drawStyle = Stroke(width = strokeWidth)),
-                maxLines = maxLines,
-                overflow = overflow,
-                fontWeight = fontWeight,
-                modifier = Modifier.clearAndSetSemantics {},
-            )
-        }
-        Text(
-            text = text,
-            style = style.copy(color = color, drawStyle = Fill),
-            maxLines = maxLines,
-            overflow = overflow,
-            fontWeight = fontWeight,
-        )
-    }
-}
-
-@Composable
-private fun ChatBadge(setId: String) {
+private fun chatBadgeStyle(setId: String): Pair<String, Color>? {
     val color = when (setId.lowercase()) {
         "broadcaster" -> Color(0xFFFF4F64)
         "moderator" -> Color(0xFF48C774)
         "vip" -> Color(0xFFFFB84D)
         "subscriber" -> Color(0xFF9B7BFF)
-        else -> PureTvTvTheme.colors.tertiary
+        else -> return null
     }
     val mark = when (setId.lowercase()) {
         "broadcaster" -> "★"
         "moderator" -> "◆"
         "vip" -> "♛"
         "subscriber" -> "✦"
-        else -> setId.take(1).uppercase()
+        else -> return null
     }
-    Text(mark, style = PureTvTvType.dataSmall.copy(fontSize = 10.sp), color = color)
-}
-
-@Composable
-private fun chatNameTextStyle(fontSize: Float, family: String): TextStyle {
-    val size = fontSize.coerceIn(8f, 14f)
-    return MaterialTheme.typography.labelMedium.copy(
-        fontSize = size.sp,
-        lineHeight = (size + 1f).sp,
-        fontFamily = chatFontFamily(family),
-    )
+    return mark to color
 }
 
 @Composable
@@ -454,8 +577,3 @@ private fun previewMessage(
     isModerator = badge == "moderator",
     isBroadcaster = badge == "broadcaster",
 )
-
-@Composable
-private fun EmoteImage(url: String, name: String, imageLoader: ImageLoader) {
-    AsyncImage(model = url, contentDescription = name, imageLoader = imageLoader, modifier = Modifier.size(16.dp))
-}

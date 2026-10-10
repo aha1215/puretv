@@ -63,11 +63,12 @@ object CommentMapper {
                     username = name,
                     displayName = name,
                     color = msg.userColor.orEmpty(),
-                    message = msg.fragments.joinToString("") { it.text },
+                    message = msg.fragments.joinToString("") { decodeHtmlEntities(it.text) },
                     parsedParts = msg.fragments.map { f ->
+                        val text = decodeHtmlEntities(f.text)
                         val emoteId = f.emote?.emoteID
-                        if (!emoteId.isNullOrBlank()) MessagePart.TwitchEmote(id = emoteId, name = f.text)
-                        else MessagePart.Text(f.text)
+                        if (!emoteId.isNullOrBlank()) MessagePart.TwitchEmote(id = emoteId, name = text)
+                        else MessagePart.Text(text)
                     },
                     badges = msg.userBadges.map { Badge(it.setID, it.version) },
                     timestamp = 0L,
@@ -77,6 +78,68 @@ object CommentMapper {
                 ),
             )
         }
+}
+
+/** Decodes the HTML entities returned in Twitch VOD comment fragment text. */
+fun decodeHtmlEntities(text: String): String {
+    var decoded = text
+    repeat(3) {
+        val next = decodeHtmlEntitiesOnce(decoded)
+        if (next == decoded) return decoded
+        decoded = next
+    }
+    return decoded
+}
+
+private fun decodeHtmlEntitiesOnce(text: String): String {
+    if ('&' !in text) return text
+    val out = StringBuilder(text.length)
+    var index = 0
+    while (index < text.length) {
+        if (text[index] != '&') {
+            out.append(text[index++])
+            continue
+        }
+
+        val semicolon = text.indexOf(';', startIndex = index + 1)
+        if (semicolon < 0 || semicolon - index > 12) {
+            out.append(text[index++])
+            continue
+        }
+        val entity = text.substring(index + 1, semicolon)
+        val codePoint = when (entity) {
+            "amp" -> '&'.code
+            "quot" -> '"'.code
+            "apos" -> '\''.code
+            "lt" -> '<'.code
+            "gt" -> '>'.code
+            "nbsp" -> 0x00A0
+            "lsquo" -> 0x2018
+            "rsquo" -> 0x2019
+            "ldquo" -> 0x201C
+            "rdquo" -> 0x201D
+            "ndash" -> 0x2013
+            "mdash" -> 0x2014
+            "hellip" -> 0x2026
+            else -> when {
+                entity.startsWith("#x", ignoreCase = true) -> entity.drop(2).toIntOrNull(16)
+                entity.startsWith('#') -> entity.drop(1).toIntOrNull()
+                else -> null
+            }
+        }
+
+        if (codePoint == null || codePoint !in 1..0x10FFFF || codePoint in 0xD800..0xDFFF) {
+            out.append(text, index, semicolon + 1)
+        } else if (codePoint <= 0xFFFF) {
+            out.append(codePoint.toChar())
+        } else {
+            val value = codePoint - 0x10000
+            out.append(((value shr 10) + 0xD800).toChar())
+            out.append(((value and 0x3FF) + 0xDC00).toChar())
+        }
+        index = semicolon + 1
+    }
+    return out.toString()
 }
 
 /**

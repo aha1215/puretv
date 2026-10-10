@@ -31,6 +31,9 @@ class VodResolver(
     suspend fun playbackPositions(oauthToken: String?): Result<Map<String, Long>> =
         gqlClient.fetchVodPlaybackPositions(oauthToken)
 
+    suspend fun playbackHistory(oauthToken: String?): Result<VodPlaybackHistory> =
+        gqlClient.fetchVodPlaybackHistory(oauthToken)
+
     suspend fun updatePlaybackPosition(
         vodId: String,
         userId: String,

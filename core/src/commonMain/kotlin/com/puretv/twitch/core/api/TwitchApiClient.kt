@@ -200,6 +200,22 @@ class TwitchApiClient(
         return VideoPage(resp.data.map { it.toDomain() }, resp.pagination.cursor)
     }
 
+    /** GET /videos by one or more IDs (Helix accepts up to 100 IDs per request). */
+    suspend fun getVideosByIds(ids: List<String>): List<VideoInfo> {
+        val safeIds = ids.filter { it.isNotBlank() && it.all(Char::isDigit) }.distinct()
+        if (safeIds.isEmpty()) return emptyList()
+        return safeIds.chunked(100).flatMap { batch ->
+            val response: HelixEnvelope<HelixVideo> = withRateLimitRetry {
+                authedClient().get("${TwitchConfig.API_BASE}/videos") {
+                    header("Client-Id", TwitchConfig.CLIENT_ID)
+                    tokenProvider()?.let { header("Authorization", "Bearer $it") }
+                    batch.forEach { parameter("id", it) }
+                }.body()
+            }
+            response.data.map(HelixVideo::toDomain)
+        }
+    }
+
     /**
      * Wraps a Helix call with 429-aware retry: exponential backoff with full jitter,
      * honoring `Ratelimit-Reset` when present. Caps at [maxAttempts].

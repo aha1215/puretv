@@ -24,6 +24,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -94,7 +95,15 @@ data class TvVodPlayerState(
     val error: String? = null,
     val title: String = "Past video",
     val subtitleMessage: String? = null,
+    val subtitleTrackPreference: String = TvPlayer.AUTO_SUBTITLE_TRACK,
     val chatMessages: List<ChatMessage> = emptyList(),
+)
+
+private data class LoadedVod(
+    val url: String,
+    val subtitleUri: android.net.Uri?,
+    val positionMs: Long,
+    val subtitleTrack: String,
 )
 
 class TvVodPlayerViewModel(
@@ -115,6 +124,7 @@ class TvVodPlayerViewModel(
     val state: StateFlow<TvVodPlayerState> = _state.asStateFlow()
     private val replay = ReplayBuffer()
     @Volatile private var emoteIndex = emptyMap<String, com.puretv.twitch.core.emotes.ResolvedEmote>()
+    private val emoteNamesReady = CompletableDeferred<Set<String>>()
     @Volatile private var lastSecond = -1L
     @Volatile private var nextOffset = 0
     @Volatile private var hasMore = true
@@ -142,6 +152,7 @@ class TvVodPlayerViewModel(
                 val local = channel?.let { emoteRepository.loadChannelEmotes(it.id, it.login) }.orEmpty()
                 buildEmoteIndex(thirdPartyChannel = local, thirdPartyGlobal = global)
             }.getOrDefault(emptyMap())
+            emoteNamesReady.complete(emoteIndex.keys)
             publishChat(lastSecond.coerceAtLeast(0))
         }
         viewModelScope.launch {
@@ -195,14 +206,16 @@ class TvVodPlayerViewModel(
             val quality = runCatching { StreamQuality.valueOf(preferred.uppercase()) }.getOrDefault(StreamQuality.AUTO)
             val url = VodResolver.playableUrlFor(master, quality)
             val subtitle = settingsStore.vodSubtitleUri(vodId)?.let { android.net.Uri.parse(it) }
-            val resumeToken = settingsStore.webResumeToken()?.takeIf(String::isNotBlank) ?: oauthToken
+            val subtitleTrack = settingsStore.vodSubtitleTrack(vodId) ?: TvPlayer.AUTO_SUBTITLE_TRACK
+            val resumeToken = settingsStore.webResumeTokenForUser(settingsStore.currentUserId()) ?: oauthToken
             val twitchPosition = withTimeoutOrNull(TWITCH_RESUME_LOOKUP_TIMEOUT_MS) {
                 vodRepository.playbackPosition(vodId, resumeToken)
             }
-            val position = twitchPosition ?: settingsStore.vodPlaybackPosition(vodId)
-            Triple(url, subtitle, position)
-        }.onSuccess { (url, subtitle, position) ->
-            player.playVod(url, subtitle, position)
+            val localPosition = settingsStore.vodPlaybackPosition(vodId)
+            val position = clampVodPosition(maxOf(twitchPosition ?: 0L, localPosition), durationSeconds)
+            LoadedVod(url, subtitle, position, subtitleTrack)
+        }.onSuccess { loaded ->
+            player.playVod(loaded.url, loaded.subtitleUri, loaded.positionMs)
             settingsStore.recordViewedVod(
                 AppSettingsStore.ViewedVod(
                     id = vodId,
@@ -211,12 +224,13 @@ class TvVodPlayerViewModel(
                     thumbnailUrl = thumbnailUrl,
                     durationSeconds = durationSeconds,
                     lastViewedEpochMs = System.currentTimeMillis(),
-                    positionMs = position,
+                    positionMs = loaded.positionMs,
                 ),
             )
             _state.value = _state.value.copy(
                 loading = false,
-                subtitleMessage = if (subtitle != null) "Remembered SRT subtitles loaded" else null,
+                subtitleMessage = if (loaded.subtitleUri != null) "Remembered SRT subtitles loaded" else null,
+                subtitleTrackPreference = loaded.subtitleTrack,
             )
         }.onFailure { e ->
             _state.value = _state.value.copy(loading = false, error = e.message ?: "Couldn't load this video")
@@ -227,6 +241,7 @@ class TvVodPlayerViewModel(
         runCatching { player.setExternalSubtitle(uri) }
             .onSuccess {
                 viewModelScope.launch { settingsStore.saveVodSubtitleUri(vodId, uri.toString()) }
+                selectSubtitleTrack(TvPlayer.AUTO_SUBTITLE_TRACK)
                 _state.value = _state.value.copy(subtitleMessage = "SRT subtitles loaded")
             }
             .onFailure { _state.value = _state.value.copy(subtitleMessage = "Couldn't load this subtitle file") }
@@ -236,8 +251,19 @@ class TvVodPlayerViewModel(
         runCatching { player.setExternalSubtitle(null) }
             .onSuccess {
                 viewModelScope.launch { settingsStore.saveVodSubtitleUri(vodId, null) }
+                selectSubtitleTrack(TvPlayer.AUTO_SUBTITLE_TRACK)
                 _state.value = _state.value.copy(subtitleMessage = "Subtitles cleared")
             }
+    }
+
+    fun selectSubtitleTrack(trackKey: String) {
+        player.selectSubtitleTrack(trackKey)
+        _state.value = _state.value.copy(subtitleTrackPreference = trackKey)
+        viewModelScope.launch { settingsStore.saveVodSubtitleTrack(vodId, trackKey) }
+    }
+
+    fun applySubtitleTrackPreference(trackKey: String) {
+        player.selectSubtitleTrack(trackKey)
     }
 
     fun seekBy(deltaMs: Long) {
@@ -280,7 +306,7 @@ class TvVodPlayerViewModel(
         val now = System.currentTimeMillis()
         if (!force && (now - lastRemotePositionAttemptMs < TWITCH_POSITION_SYNC_INTERVAL_MS || seconds == lastRemotePositionSeconds)) return
         val settings = settingsStore.flow.first()
-        val oauthToken = settingsStore.webResumeToken()?.takeIf { it.isNotBlank() }
+        val oauthToken = settingsStore.webResumeTokenForUser(settings.userId)
             ?: settings.accessToken.takeIf { it.isNotBlank() }
             ?: return
         val userId = settings.userId
@@ -338,7 +364,8 @@ class TvVodPlayerViewModel(
         lateinit var job: Job
         job = viewModelScope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
             try {
-                val result = chatTranslator.translate(message.message, targetLanguage)
+                val knownEmoteNames = emoteNamesReady.await()
+                val result = chatTranslator.translate(message, targetLanguage, knownEmoteNames)
                 processedTranslations += key
                 while (processedTranslations.size > MAX_CACHED_CHAT_TRANSLATIONS * 2) {
                     processedTranslations.remove(processedTranslations.first())

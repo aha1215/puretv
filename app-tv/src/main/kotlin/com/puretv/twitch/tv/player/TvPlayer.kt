@@ -26,6 +26,8 @@ import com.puretv.twitch.core.adblock.PlaylistDetect
 import com.puretv.twitch.core.model.StreamQuality
 import com.puretv.twitch.core.stream.HlsMasterParser
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Interceptor
@@ -34,6 +36,13 @@ import okhttp3.OkHttpClient
 import okhttp3.Response
 import okhttp3.ResponseBody.Companion.toResponseBody
 import java.util.concurrent.ConcurrentHashMap
+
+data class SubtitleTrack(
+    val key: String,
+    val label: String,
+    val language: String?,
+    val selected: Boolean,
+)
 
 /**
  * SECTION 06.3 / 07.4, TV counterpart of the phone app's `TwitchPlayer`.
@@ -62,6 +71,32 @@ class TvPlayer(
      */
     private var _exoPlayer: ExoPlayer? = null
     private var externalSubtitleListener: Player.Listener? = null
+    private val _subtitleTracks = MutableStateFlow<List<SubtitleTrack>>(emptyList())
+    val subtitleTracks: StateFlow<List<SubtitleTrack>> = _subtitleTracks
+
+    private val subtitleTrackListener = object : Player.Listener {
+        override fun onTracksChanged(tracks: Tracks) {
+            _subtitleTracks.value = buildList {
+                tracks.groups.forEach { group ->
+                    if (group.type != C.TRACK_TYPE_TEXT) return@forEach
+                    for (index in 0 until group.length) {
+                        if (!group.isTrackSupported(index)) continue
+                        val format = group.mediaTrackGroup.getFormat(index)
+                        add(
+                            SubtitleTrack(
+                                key = subtitleTrackKey(tracks, group, index),
+                                label = format.label?.takeIf(String::isNotBlank)
+                                    ?: format.language?.takeIf(String::isNotBlank)
+                                    ?: "Subtitle ${size + 1}",
+                                language = format.language?.takeIf(String::isNotBlank),
+                                selected = group.isTrackSelected(index),
+                            ),
+                        )
+                    }
+                }
+            }
+        }
+    }
 
     val exoPlayer: ExoPlayer
         get() = _exoPlayer ?: buildPlayer().also { _exoPlayer = it }
@@ -110,6 +145,7 @@ class TvPlayer(
         .apply {
             playWhenReady = true
             addListener(recoveryListener)
+            addListener(subtitleTrackListener)
         }
 
     /**
@@ -163,6 +199,10 @@ class TvPlayer(
     fun playVod(url: String, subtitleUri: Uri? = null, startPositionMs: Long = 0L) {
         errorRetries = 0
         setQuality(StreamQuality.AUTO)
+        exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters.buildUpon()
+            .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+            .build()
         val item = mediaItem(url, subtitleUri)
         with(exoPlayer) {
             setMediaItem(item, startPositionMs.coerceAtLeast(0L))
@@ -181,7 +221,10 @@ class TvPlayer(
         val wasPlaying = player.playWhenReady
         val tracks = player.trackSelectionParameters
         player.setMediaItem(mediaItem(current.localConfiguration?.uri?.toString() ?: return, uri), position)
-        player.trackSelectionParameters = tracks.buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false).build()
+        player.trackSelectionParameters = tracks.buildUpon()
+            .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+            .build()
         if (uri != null) {
             // Explicitly select the external subtitle track once Media3 has parsed
             // it. Some TV track selectors leave an undetermined-language SRT
@@ -189,9 +232,15 @@ class TvPlayer(
             val listener = object : Player.Listener {
                 override fun onTracksChanged(tracks: Tracks) {
                     val textGroup = tracks.groups.firstOrNull { group ->
+                        group.type == C.TRACK_TYPE_TEXT && (0 until group.length).any { index ->
+                            group.isTrackSupported(index) && group.mediaTrackGroup.getFormat(index).label == "External subtitles"
+                        }
+                    } ?: tracks.groups.firstOrNull { group ->
                         group.type == C.TRACK_TYPE_TEXT && (0 until group.length).any(group::isTrackSupported)
                     } ?: return
-                    val trackIndex = (0 until textGroup.length).firstOrNull(textGroup::isTrackSupported) ?: return
+                    val trackIndex = (0 until textGroup.length).firstOrNull { index ->
+                        textGroup.isTrackSupported(index) && textGroup.mediaTrackGroup.getFormat(index).label == "External subtitles"
+                    } ?: (0 until textGroup.length).firstOrNull(textGroup::isTrackSupported) ?: return
                     externalSubtitleListener = null
                     player.removeListener(this)
                     player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
@@ -208,6 +257,54 @@ class TvPlayer(
         player.prepare()
         player.playWhenReady = wasPlaying
     }
+
+    /** Select one supported text track, disable text tracks, or restore automatic selection. */
+    fun selectSubtitleTrack(trackKey: String) {
+        val player = exoPlayer
+        val builder = player.trackSelectionParameters.buildUpon()
+            .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+        when (trackKey) {
+            AUTO_SUBTITLE_TRACK -> builder.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+            OFF_SUBTITLE_TRACK -> builder.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+            else -> {
+                val currentTracks = player.currentTracks
+                val match = currentTracks.groups.asSequence()
+                    .filter { it.type == C.TRACK_TYPE_TEXT }
+                    .flatMap { group -> (0 until group.length).asSequence().map { index -> group to index } }
+                    .firstOrNull { (group, index) -> group.isTrackSupported(index) && subtitleTrackKey(currentTracks, group, index) == trackKey }
+                if (match != null) {
+                    val (group, index) = match
+                    builder.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                        .addOverride(androidx.media3.common.TrackSelectionOverride(group.mediaTrackGroup, listOf(index)))
+                } else {
+                    // A saved track can disappear from a later encode. Leave automatic selection active.
+                    builder.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                }
+            }
+        }
+        player.trackSelectionParameters = builder.build()
+    }
+
+    private fun subtitleTrackKey(tracks: Tracks, targetGroup: Tracks.Group, targetIndex: Int): String {
+        val base = subtitleBaseKey(targetGroup.mediaTrackGroup.getFormat(targetIndex))
+        var occurrence = 0
+        for (group in tracks.groups) {
+            if (group.type != C.TRACK_TYPE_TEXT) continue
+            for (index in 0 until group.length) {
+                if (group === targetGroup && index == targetIndex) return "$base#$occurrence"
+                if (subtitleBaseKey(group.mediaTrackGroup.getFormat(index)) == base) occurrence++
+            }
+        }
+        return "$base#$occurrence"
+    }
+
+    private fun subtitleBaseKey(format: androidx.media3.common.Format): String = listOf(
+        format.id.orEmpty(),
+        format.language.orEmpty(),
+        format.label.orEmpty(),
+        format.sampleMimeType.orEmpty(),
+        format.roleFlags.toString(),
+    ).joinToString("|")
 
     private fun mediaItem(url: String, subtitleUri: Uri?): MediaItem {
         val builder = MediaItem.Builder().setUri(url)
@@ -228,6 +325,12 @@ class TvPlayer(
 
     fun togglePlayPause() {
         if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
+    }
+
+    companion object {
+        const val AUTO_SUBTITLE_TRACK = "__puretv_auto__"
+        const val OFF_SUBTITLE_TRACK = "__puretv_off__"
+        private const val MAX_ERROR_RETRIES = 3
     }
 
     /**
@@ -262,6 +365,7 @@ class TvPlayer(
             stop()
             clearMediaItems()
         }
+        _subtitleTracks.value = emptyList()
     }
 
     /**
@@ -274,12 +378,10 @@ class TvPlayer(
         externalSubtitleListener = null
         _exoPlayer?.release()
         _exoPlayer = null
+        _subtitleTracks.value = emptyList()
         errorRetries = 0
     }
 
-    private companion object {
-        const val MAX_ERROR_RETRIES = 3
-    }
 }
 
 /**

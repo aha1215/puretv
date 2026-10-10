@@ -33,6 +33,17 @@ private val Context.dataStore by preferencesDataStore(
     corruptionHandler = ReplaceFileCorruptionHandler { emptyPreferences() },
 )
 
+internal fun scopedWebResumeToken(token: String?, websiteUserId: String?, activeUserId: String?): String? {
+    val safeToken = token?.takeIf(String::isNotBlank) ?: return null
+    val savedAccount = websiteUserId?.takeIf(String::isNotBlank)
+    val activeAccount = activeUserId?.takeIf(String::isNotBlank)
+    return when {
+        savedAccount != null && savedAccount == activeAccount -> safeToken
+        savedAccount == null && activeAccount == null -> safeToken
+        else -> null
+    }
+}
+
 /**
  * SECTION 09.2 — TV counterpart of the phone app's `AppSettingsStore`.
  * Same split — ordinary prefs in DataStore, OAuth triad mirrored from
@@ -50,17 +61,28 @@ class AppSettingsStore(
         val opacity: Float = 0f,
         val widthDp: Float = 360f,
         val side: String = "right",
+        /** Fractions of the available travel range; null keeps the legacy side-centered placement. */
+        val positionXFraction: Float? = null,
+        val positionYFraction: Float? = null,
+        val heightFraction: Float = 0.98f,
         val fadeSeconds: Int = 0,
         val fontFamily: String = "sans",
         val textColor: String = "white",
         val outlineColor: String = "black",
-        val outlineWidthDp: Float = 1.5f,
+        val outlineWidthDp: Float = 0.75f,
         val useTwitchNameColors: Boolean = true,
     )
 
     data class ChatTranslation(
         val enabled: Boolean = true,
         val targetLanguage: String = "en",
+    )
+
+    data class SubtitleAppearance(
+        val sizeSp: Float = 28f,
+        val textColor: String = "white",
+        val backgroundOpacity: Float = 0.75f,
+        val bottomPaddingFraction: Float = 0.1f,
     )
 
     data class BrowserVodSync(
@@ -107,12 +129,19 @@ class AppSettingsStore(
         val TV_CHAT_OPACITY = floatPreferencesKey("tv_chat_opacity")
         val TV_CHAT_WIDTH = floatPreferencesKey("tv_chat_width")
         val TV_CHAT_SIDE = stringPreferencesKey("tv_chat_side")
+        val TV_CHAT_X = floatPreferencesKey("tv_chat_x_fraction")
+        val TV_CHAT_Y = floatPreferencesKey("tv_chat_y_fraction")
+        val TV_CHAT_HEIGHT = floatPreferencesKey("tv_chat_height_fraction")
         val TV_CHAT_FADE_SECONDS = intPreferencesKey("tv_chat_fade_seconds")
         val TV_CHAT_FONT_FAMILY = stringPreferencesKey("tv_chat_font_family")
         val TV_CHAT_TEXT_COLOR = stringPreferencesKey("tv_chat_text_color")
         val TV_CHAT_OUTLINE_COLOR = stringPreferencesKey("tv_chat_outline_color")
         val TV_CHAT_OUTLINE_WIDTH = floatPreferencesKey("tv_chat_outline_width")
         val TV_CHAT_TWITCH_NAME_COLORS = booleanPreferencesKey("tv_chat_twitch_name_colors")
+        val TV_SUBTITLE_SIZE = floatPreferencesKey("tv_subtitle_size_sp")
+        val TV_SUBTITLE_TEXT_COLOR = stringPreferencesKey("tv_subtitle_text_color")
+        val TV_SUBTITLE_BACKGROUND_OPACITY = floatPreferencesKey("tv_subtitle_background_opacity")
+        val TV_SUBTITLE_BOTTOM_PADDING = floatPreferencesKey("tv_subtitle_bottom_padding")
         val TV_CHAT_TRANSLATION_ENABLED = booleanPreferencesKey("tv_chat_translation_enabled")
         val TV_CHAT_TRANSLATION_TARGET = stringPreferencesKey("tv_chat_translation_target")
         val TV_VOD_SEEK_PROFILE = stringPreferencesKey("tv_vod_seek_profile")
@@ -185,11 +214,14 @@ class AppSettingsStore(
             },
             widthDp = (prefs[Keys.TV_CHAT_WIDTH] ?: 360f).coerceIn(280f, 480f),
             side = if (prefs[Keys.TV_CHAT_SIDE] == "left") "left" else "right",
+            positionXFraction = prefs[Keys.TV_CHAT_X]?.coerceIn(0f, 1f),
+            positionYFraction = prefs[Keys.TV_CHAT_Y]?.coerceIn(0f, 1f),
+            heightFraction = (prefs[Keys.TV_CHAT_HEIGHT] ?: 0.98f).coerceIn(0.2f, 0.98f),
             fadeSeconds = (prefs[Keys.TV_CHAT_FADE_SECONDS] ?: 0).coerceIn(0, 120),
             fontFamily = prefs[Keys.TV_CHAT_FONT_FAMILY].orEmpty().takeIf { it in setOf("sans", "serif", "mono") } ?: "sans",
             textColor = prefs[Keys.TV_CHAT_TEXT_COLOR].orEmpty().takeIf { it in setOf("white", "warm", "yellow") } ?: "white",
             outlineColor = prefs[Keys.TV_CHAT_OUTLINE_COLOR].orEmpty().takeIf { it in setOf("black", "navy", "white") } ?: "black",
-            outlineWidthDp = (prefs[Keys.TV_CHAT_OUTLINE_WIDTH] ?: 1.5f).coerceIn(0f, 4f),
+            outlineWidthDp = (prefs[Keys.TV_CHAT_OUTLINE_WIDTH] ?: 0.75f).coerceIn(0f, 4f),
             useTwitchNameColors = prefs[Keys.TV_CHAT_TWITCH_NAME_COLORS] ?: true,
         )
     }
@@ -201,12 +233,36 @@ class AppSettingsStore(
             prefs[Keys.TV_CHAT_OPACITY] = next.opacity.coerceIn(0f, 1f)
             prefs[Keys.TV_CHAT_WIDTH] = next.widthDp.coerceIn(280f, 480f)
             prefs[Keys.TV_CHAT_SIDE] = if (next.side == "left") "left" else "right"
+            next.positionXFraction?.let { prefs[Keys.TV_CHAT_X] = it.coerceIn(0f, 1f) }
+                ?: prefs.remove(Keys.TV_CHAT_X)
+            next.positionYFraction?.let { prefs[Keys.TV_CHAT_Y] = it.coerceIn(0f, 1f) }
+                ?: prefs.remove(Keys.TV_CHAT_Y)
+            prefs[Keys.TV_CHAT_HEIGHT] = next.heightFraction.coerceIn(0.2f, 0.98f)
             prefs[Keys.TV_CHAT_FADE_SECONDS] = next.fadeSeconds.coerceIn(0, 120)
             prefs[Keys.TV_CHAT_FONT_FAMILY] = next.fontFamily.takeIf { it in setOf("sans", "serif", "mono") } ?: "sans"
             prefs[Keys.TV_CHAT_TEXT_COLOR] = next.textColor.takeIf { it in setOf("white", "warm", "yellow") } ?: "white"
             prefs[Keys.TV_CHAT_OUTLINE_COLOR] = next.outlineColor.takeIf { it in setOf("black", "navy", "white") } ?: "black"
             prefs[Keys.TV_CHAT_OUTLINE_WIDTH] = next.outlineWidthDp.coerceIn(0f, 4f)
             prefs[Keys.TV_CHAT_TWITCH_NAME_COLORS] = next.useTwitchNameColors
+        }
+    }
+
+    val subtitleAppearance: Flow<SubtitleAppearance> = context.dataStore.data.map { prefs ->
+        SubtitleAppearance(
+            sizeSp = (prefs[Keys.TV_SUBTITLE_SIZE] ?: 28f).coerceIn(20f, 40f),
+            textColor = prefs[Keys.TV_SUBTITLE_TEXT_COLOR].orEmpty().takeIf { it in setOf("white", "yellow", "cyan") } ?: "white",
+            backgroundOpacity = (prefs[Keys.TV_SUBTITLE_BACKGROUND_OPACITY] ?: 0.75f).coerceIn(0f, 1f),
+            bottomPaddingFraction = (prefs[Keys.TV_SUBTITLE_BOTTOM_PADDING] ?: 0.1f).coerceIn(0.05f, 0.25f),
+        )
+    }
+
+    suspend fun updateSubtitleAppearance(transform: (SubtitleAppearance) -> SubtitleAppearance) {
+        val next = transform(subtitleAppearance.first())
+        context.dataStore.edit { prefs ->
+            prefs[Keys.TV_SUBTITLE_SIZE] = next.sizeSp.coerceIn(20f, 40f)
+            prefs[Keys.TV_SUBTITLE_TEXT_COLOR] = next.textColor.takeIf { it in setOf("white", "yellow", "cyan") } ?: "white"
+            prefs[Keys.TV_SUBTITLE_BACKGROUND_OPACITY] = next.backgroundOpacity.coerceIn(0f, 1f)
+            prefs[Keys.TV_SUBTITLE_BOTTOM_PADDING] = next.bottomPaddingFraction.coerceIn(0.05f, 0.25f)
         }
     }
 
@@ -312,6 +368,13 @@ class AppSettingsStore(
         }
     }
 
+    suspend fun vodSubtitleTrack(vodId: String): String? =
+        context.dataStore.data.first()[stringPreferencesKey("tv_vod_subtitle_track_$vodId")]
+
+    suspend fun saveVodSubtitleTrack(vodId: String, trackKey: String) {
+        context.dataStore.edit { prefs -> prefs[stringPreferencesKey("tv_vod_subtitle_track_$vodId")] = trackKey }
+    }
+
     suspend fun update(transform: (AppSettings) -> AppSettings) {
         val current = flow.first()
         val next = transform(current)
@@ -348,12 +411,20 @@ class AppSettingsStore(
 
     fun currentRefreshToken(): String? = secureTokenStore.refreshToken()
 
+    fun currentUserId(): String? = secureTokenStore.userId()
+
     fun webResumeToken(): String? = secureTokenStore.webResumeToken()
+
+    fun webResumeUserId(): String? = secureTokenStore.webResumeUserId()
+
+    /** Return the website credential only when it belongs to the active app account. */
+    fun webResumeTokenForUser(userId: String?): String? =
+        scopedWebResumeToken(webResumeToken(), webResumeUserId(), userId)
 
     val webResumeSessionLinked: StateFlow<Boolean> = secureTokenStore.webResumeSessionLinked
     val webResumeSessionRevision: StateFlow<Long> = secureTokenStore.webResumeSessionRevision
 
-    fun saveWebResumeToken(token: String) = secureTokenStore.saveWebResumeToken(token)
+    fun saveWebResumeToken(token: String, userId: String? = null) = secureTokenStore.saveWebResumeToken(token, userId)
 
     fun clearWebResumeToken() = secureTokenStore.clearWebResumeToken()
 

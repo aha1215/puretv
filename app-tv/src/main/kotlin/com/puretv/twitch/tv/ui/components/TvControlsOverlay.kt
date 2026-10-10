@@ -11,7 +11,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -59,6 +58,7 @@ fun TvControlsOverlay(
     adBlockStatus: AdBlockStatus,
     onBack: () -> Unit,
     onOpenChannel: () -> Unit,
+    onEditChat: () -> Unit,
     onTogglePlayPause: () -> Unit,
     onSelectQuality: (StreamQuality) -> Unit,
     modifier: Modifier = Modifier,
@@ -75,32 +75,30 @@ fun TvControlsOverlay(
     }
 
     AnimatedVisibility(visible = visible, enter = fadeIn(), exit = fadeOut(), modifier = modifier) {
-        Box(modifier = Modifier.fillMaxSize().padding(24.dp)) {
-            // Header: back, title/viewer-count. heightIn (not height) because a long
-            // stream title must be free to wrap without pushing the pill out of the bar.
+        Box(modifier = Modifier.fillMaxSize().padding(horizontal = 28.dp, vertical = 20.dp)) {
+            // Keep the stream identity readable without covering a large part of the video.
             Row(
                 modifier = Modifier
                     .align(Alignment.TopCenter)
                     .fillMaxWidth()
-                    .heightIn(min = 60.dp)
                     .clip(shapes.paneShape)
-                    .background(c.surfaceContainer)
-                    .padding(horizontal = 18.dp, vertical = 12.dp),
+                    .background(c.surfaceContainer.copy(alpha = .94f))
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 TvExpressiveIconButton(
                     icon = ExpressiveIcons.Back,
                     contentDescription = "Back",
                     onClick = onBack,
                     style = TvButtonStyle.Tonal,
-                    boxSize = 48.dp,
-                    iconSize = 22.dp,
+                    boxSize = 44.dp,
+                    iconSize = 20.dp,
                 )
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = title,
-                        style = MaterialTheme.typography.titleLarge,
+                        style = MaterialTheme.typography.titleMedium,
                         color = c.onSurface,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
@@ -118,40 +116,57 @@ fun TvControlsOverlay(
                     size = TvButtonSize.Medium,
                     modifier = Modifier.focusRequester(channelFocus),
                 )
-                // A standing fact about the app (mirrors TvShieldPill's own intent),
-                // so it stays up for the whole time the chrome is visible rather than
-                // fading after 3s like the toast below — the two answer different
-                // questions ("is ad-block on right now" vs "did it just do something").
                 adBlockStandingLabel(adBlockStatus)?.let { label -> TvShieldPill(text = label) }
             }
 
-            // Footer: transport controls + quality.
-            Row(
+            // Two short rows keep the transport action distinct from quality and chat.
+            Column(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
                     .clip(shapes.paneShape)
-                    .background(c.surfaceContainer)
-                    .padding(18.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    .background(c.surfaceContainer.copy(alpha = .96f))
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                TvExpressiveIconButton(
-                    icon = if (isPlaying) ExpressiveIcons.Pause else ExpressiveIcons.Play,
-                    contentDescription = if (isPlaying) "Pause" else "Play",
-                    onClick = onTogglePlayPause,
-                    style = TvButtonStyle.Filled,
-                    boxSize = 56.dp,
-                    iconSize = 26.dp,
-                )
-                // Same order stepQuality() in TvStreamScreen walks via FF/RW, so the
-                // row the viewer sees always agrees with what those keys do.
-                StreamQuality.entries.sortedBy { it.sortOrder }.forEach { quality ->
-                    TvFilterChip(
-                        label = quality.label,
-                        selected = quality == currentQuality,
-                        onClick = { onSelectQuality(quality) },
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    TvExpressiveIconButton(
+                        icon = if (isPlaying) ExpressiveIcons.Pause else ExpressiveIcons.Play,
+                        contentDescription = if (isPlaying) "Pause" else "Play",
+                        onClick = onTogglePlayPause,
+                        style = TvButtonStyle.Filled,
+                        boxSize = 48.dp,
+                        iconSize = 22.dp,
                     )
+                    TvLivePill()
+                    Spacer(modifier = Modifier.weight(1f))
+                    TvExpressiveButton(
+                        text = "Edit chat",
+                        onClick = onEditChat,
+                        style = TvButtonStyle.Tonal,
+                        size = TvButtonSize.Medium,
+                        icon = ExpressiveIcons.Chat,
+                    )
+                    Text("BACK hide controls / exit  ·  UP chat when hidden  ·  DOWN controls", color = c.onSurfaceVariant, style = PureTvTvType.dataSmall)
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text("QUALITY", color = c.onSurfaceVariant, style = PureTvTvType.dataSmall)
+                    // Keep the visible choices in the same order as remote quality stepping.
+                    StreamQuality.entries.sortedBy { it.sortOrder }.forEach { quality ->
+                        TvFilterChip(
+                            label = quality.label,
+                            selected = quality == currentQuality,
+                            onClick = { onSelectQuality(quality) },
+                        )
+                    }
                 }
             }
         }

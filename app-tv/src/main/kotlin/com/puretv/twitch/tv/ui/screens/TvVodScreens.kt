@@ -2,13 +2,13 @@ package com.puretv.twitch.tv.ui.screens
 
 import android.content.ActivityNotFoundException
 import android.content.Intent
-import android.os.SystemClock
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -16,16 +16,22 @@ import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.ui.draw.clip
@@ -43,6 +49,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -54,15 +62,17 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.PlayerView
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
+import androidx.compose.ui.window.Dialog
 import coil3.compose.AsyncImage
 import com.puretv.twitch.core.model.VideoInfo
 import com.puretv.twitch.tv.data.AppSettingsStore
@@ -76,7 +86,10 @@ import com.puretv.twitch.tv.ui.components.TvPageTitle
 import com.puretv.twitch.tv.ui.components.TvPanel
 import com.puretv.twitch.tv.ui.components.ExpressiveIcons
 import com.puretv.twitch.tv.ui.components.TvChatOverlay
+import com.puretv.twitch.tv.ui.components.TvChatEditDirection
+import com.puretv.twitch.tv.ui.components.TvChatEditMode
 import com.puretv.twitch.tv.ui.components.TvSectionHeading
+import com.puretv.twitch.tv.ui.components.adjustTvChatAppearance
 import com.puretv.twitch.tv.ui.components.tvFocusClickable
 import com.puretv.twitch.tv.ui.theme.PureTvTvTheme
 import org.koin.androidx.compose.koinViewModel
@@ -181,10 +194,19 @@ fun TvVodPlayerScreen(channelLogin: String, vodId: String, title: String, thumbn
     val settingsStore = koinInject<AppSettingsStore>()
     val appSettings by settingsStore.flow.collectAsState(initial = com.puretv.twitch.core.model.AppSettings())
     val chatAppearance by settingsStore.chatAppearance.collectAsState(initial = AppSettingsStore.ChatAppearance())
-    val seekProfile by settingsStore.vodSeekProfile.collectAsState(initial = AppSettingsStore.VodSeekProfile.Standard)
+    val subtitleAppearance by settingsStore.subtitleAppearance.collectAsState(initial = AppSettingsStore.SubtitleAppearance())
+    val subtitleTracks by player.subtitleTracks.collectAsState()
+    val configuration = LocalConfiguration.current
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
     val c = PureTvTvTheme.colors
     var pickerMessage by remember { mutableStateOf<String?>(null) }
+    var subtitlePanelVisible by remember { mutableStateOf(false) }
     var chatVisible by remember { mutableStateOf(true) }
+    var chatEditing by remember { mutableStateOf(false) }
+    var chatEditMode by remember { mutableStateOf(TvChatEditMode.Reposition) }
+    var chatSaving by remember { mutableStateOf(false) }
+    var draftChatAppearance by remember { mutableStateOf(chatAppearance) }
+    var draftChatFontSize by remember { mutableStateOf(appSettings.chatFontSize) }
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
         val name = runCatching {
@@ -202,6 +224,7 @@ fun TvVodPlayerScreen(channelLogin: String, vodId: String, title: String, thumbn
     val focus = remember { FocusRequester() }
     val playFocus = remember { FocusRequester() }
     val subtitleFocus = remember { FocusRequester() }
+    val subtitlePanelFocus = remember { FocusRequester() }
     val seekFocus = remember { FocusRequester() }
     var seekingFraction by remember(vodId) { mutableStateOf<Float?>(null) }
     var seekBarFocused by remember { mutableStateOf(false) }
@@ -209,6 +232,30 @@ fun TvVodPlayerScreen(channelLogin: String, vodId: String, title: String, thumbn
     LaunchedEffect(Unit) {
         kotlinx.coroutines.yield()
         runCatching { focus.requestFocus() }
+    }
+    LaunchedEffect(state.loading, state.subtitleTrackPreference) {
+        if (state.loading) return@LaunchedEffect
+        val preference = state.subtitleTrackPreference
+        if (preference == com.puretv.twitch.tv.player.TvPlayer.AUTO_SUBTITLE_TRACK ||
+            preference == com.puretv.twitch.tv.player.TvPlayer.OFF_SUBTITLE_TRACK
+        ) {
+            viewModel.applySubtitleTrackPreference(preference)
+        } else {
+            val available = withTimeoutOrNull(15_000L) {
+                snapshotFlow { player.subtitleTracks.value to player.exoPlayer.playbackState }
+                    .first { (tracks, playbackState) ->
+                        tracks.any { it.key == preference } || playbackState == Player.STATE_READY
+                    }
+            }?.first.orEmpty()
+            if (available.any { it.key == preference }) viewModel.applySubtitleTrackPreference(preference)
+            else viewModel.selectSubtitleTrack(com.puretv.twitch.tv.player.TvPlayer.AUTO_SUBTITLE_TRACK)
+        }
+    }
+    LaunchedEffect(subtitlePanelVisible) {
+        if (subtitlePanelVisible) {
+            androidx.compose.runtime.withFrameNanos { }
+            runCatching { subtitlePanelFocus.requestFocus() }
+        }
     }
     DisposableEffect(player) {
         val listener = object : Player.Listener {
@@ -221,47 +268,55 @@ fun TvVodPlayerScreen(channelLogin: String, vodId: String, title: String, thumbn
     }
     var controlsVisible by remember { mutableStateOf(false) }
     var controlsActivity by remember { mutableStateOf(0) }
-    var controlsHaveFocus by remember { mutableStateOf(false) }
-    var positionVisible by remember { mutableStateOf(false) }
-    var positionActivity by remember { mutableStateOf(0) }
-    var heldSeekDirection by remember { mutableStateOf<Key?>(null) }
-    var heldSeekStartedAtMs by remember { mutableStateOf(0L) }
-    var lastSeekStepMinutes by remember { mutableStateOf(1) }
     fun showControls() {
         controlsVisible = true
         controlsActivity++
     }
-    fun showPosition() {
+    fun beginChatEditing() {
+        draftChatAppearance = if (
+            chatAppearance.positionXFraction == null &&
+            chatAppearance.positionYFraction == null &&
+            chatAppearance.heightFraction >= 0.98f
+        ) chatAppearance.copy(heightFraction = 0.7f) else chatAppearance
+        draftChatFontSize = appSettings.chatFontSize
+        chatVisible = true
+        chatEditing = true
+        chatEditMode = TvChatEditMode.Reposition
         controlsVisible = false
-        controlsHaveFocus = false
-        positionVisible = true
-        heldSeekDirection = null
-        heldSeekStartedAtMs = 0L
-        lastSeekStepMinutes = seekProfile.stepsMinutes.first()
-        positionActivity++
+        scope.launch { androidx.compose.runtime.withFrameNanos { }; runCatching { focus.requestFocus() } }
     }
-    fun seekFromRemote(direction: Key) {
-        if (!positionVisible) {
-            viewModel.seekBy(if (direction == Key.DirectionLeft) -10_000L else 10_000L)
-            return
+    fun openSubtitlePanel() {
+        subtitlePanelVisible = true
+        controlsVisible = false
+    }
+    fun updateSubtitleAppearance(transform: (AppSettingsStore.SubtitleAppearance) -> AppSettingsStore.SubtitleAppearance) {
+        scope.launch { settingsStore.updateSubtitleAppearance(transform) }
+    }
+    fun finishChatEditing() {
+        if (chatSaving) return
+        chatSaving = true
+        val draft = draftChatAppearance
+        scope.launch {
+            try {
+                settingsStore.updateChatAppearance {
+                    it.copy(
+                        widthDp = draft.widthDp,
+                        side = draft.side,
+                        positionXFraction = draft.positionXFraction,
+                        positionYFraction = draft.positionYFraction,
+                        heightFraction = draft.heightFraction,
+                    )
+                }
+                settingsStore.update { it.copy(chatFontSize = draftChatFontSize) }
+                chatVisible = true
+                chatEditing = false
+                chatEditMode = TvChatEditMode.Reposition
+            } catch (_: Exception) {
+                // Keep the editor open so Back can retry if preferences fail to save.
+            } finally {
+                chatSaving = false
+            }
         }
-        val now = SystemClock.uptimeMillis()
-        if (heldSeekDirection != direction || heldSeekStartedAtMs == 0L) {
-            heldSeekDirection = direction
-            heldSeekStartedAtMs = now
-        }
-        val heldForMs = now - heldSeekStartedAtMs
-        val stage = when {
-            heldForMs >= 6_000L -> 3
-            heldForMs >= 3_500L -> 2
-            heldForMs >= 1_200L -> 1
-            else -> 0
-        }
-        val minutes = seekProfile.stepsMinutes[stage.coerceIn(seekProfile.stepsMinutes.indices)]
-        lastSeekStepMinutes = minutes
-        val sign = if (direction == Key.DirectionLeft) -1L else 1L
-        viewModel.seekBy(sign * minutes * 60_000L)
-        positionActivity++
     }
     var playbackPosition by remember { mutableStateOf(0L) }
     var playbackDuration by remember { mutableStateOf(0L) }
@@ -278,66 +333,93 @@ fun TvVodPlayerScreen(channelLogin: String, vodId: String, title: String, thumbn
             controlsVisible = false
         }
     }
-    LaunchedEffect(positionVisible, positionActivity) {
-        if (positionVisible) {
-            kotlinx.coroutines.delay(4_500)
-            positionVisible = false
-            heldSeekDirection = null
-            heldSeekStartedAtMs = 0L
-        }
-    }
-    val scope = androidx.compose.runtime.rememberCoroutineScope()
     Box(Modifier.fillMaxSize().background(Color.Black).focusRequester(focus).focusable()
         .onPreviewKeyEvent { event ->
-            if (event.type == KeyEventType.KeyUp) {
-                if (event.key == Key.DirectionLeft || event.key == Key.DirectionRight) {
-                    heldSeekDirection = null
-                    heldSeekStartedAtMs = 0L
+            if (event.type == KeyEventType.KeyUp) return@onPreviewKeyEvent false
+            if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+            if (chatEditing) {
+                if (chatSaving) return@onPreviewKeyEvent true
+                if (event.key == Key.Back) {
+                    finishChatEditing()
                     return@onPreviewKeyEvent true
                 }
-                return@onPreviewKeyEvent false
+                when (event.key) {
+                    Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> {
+                        chatEditMode = when (chatEditMode) {
+                            TvChatEditMode.Reposition -> TvChatEditMode.Resize
+                            TvChatEditMode.Resize -> TvChatEditMode.FontSize
+                            TvChatEditMode.FontSize -> TvChatEditMode.Reposition
+                        }
+                    }
+                    Key.DirectionLeft, Key.DirectionRight, Key.DirectionUp, Key.DirectionDown -> {
+                        val direction = when (event.key) {
+                            Key.DirectionLeft -> TvChatEditDirection.Left
+                            Key.DirectionRight -> TvChatEditDirection.Right
+                            Key.DirectionUp -> TvChatEditDirection.Up
+                            else -> TvChatEditDirection.Down
+                        }
+                        if (chatEditMode == TvChatEditMode.FontSize) {
+                            draftChatFontSize = when (direction) {
+                                TvChatEditDirection.Up -> (draftChatFontSize + 1f).coerceAtMost(14f)
+                                TvChatEditDirection.Down -> (draftChatFontSize - 1f).coerceAtLeast(8f)
+                                else -> draftChatFontSize
+                            }
+                        } else {
+                            draftChatAppearance = adjustTvChatAppearance(
+                                appearance = draftChatAppearance,
+                                direction = direction,
+                                resizeMode = chatEditMode == TvChatEditMode.Resize,
+                                availableWidthDp = (configuration.screenWidthDp - 24).coerceAtLeast(280).toFloat(),
+                                availableHeightDp = (configuration.screenHeightDp - 24).coerceAtLeast(240).toFloat(),
+                            )
+                        }
+                    }
+                    else -> Unit
+                }
+                return@onPreviewKeyEvent true
             }
-            if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+            if (subtitlePanelVisible) {
+                if (event.key == Key.Back) {
+                    subtitlePanelVisible = false
+                    showControls()
+                }
+                return@onPreviewKeyEvent true
+            }
             when (event.key) {
                 Key.Back -> {
-                    when {
-                        positionVisible -> positionVisible = false
-                        controlsVisible -> controlsVisible = false
-                        chatVisible -> chatVisible = false
-                        else -> onBack()
+                    if (controlsVisible) {
+                        controlsVisible = false
+                        seekBarFocused = false
+                        scope.launch { androidx.compose.runtime.withFrameNanos { }; runCatching { focus.requestFocus() } }
+                    } else {
+                        onBack()
                     }
                     true
                 }
                 Key.Menu -> {
                     chatVisible = !chatVisible
                     controlsVisible = false
-                    positionVisible = false
                     true
                 }
                 Key.DirectionDown -> {
-                    positionVisible = false
                     if (!controlsVisible) {
                         showControls()
-                        scope.launch { androidx.compose.runtime.withFrameNanos { }; runCatching { seekFocus.requestFocus() } }
+                        scope.launch { androidx.compose.runtime.withFrameNanos { }; runCatching { playFocus.requestFocus() } }
                         true
                     } else false
                 }
                 Key.DirectionUp -> {
-                    showPosition()
+                    if (controlsVisible) {
+                        showControls()
+                        scope.launch { androidx.compose.runtime.withFrameNanos { }; runCatching { seekFocus.requestFocus() } }
+                    } else {
+                        chatVisible = !chatVisible
+                    }
                     true
-                }
-                Key.DirectionLeft -> {
-                    if (controlsVisible && (controlsHaveFocus || seekBarFocused)) false
-                    else { seekFromRemote(Key.DirectionLeft); true }
-                }
-                Key.DirectionRight -> {
-                    if (controlsVisible && (controlsHaveFocus || seekBarFocused)) false
-                    else { seekFromRemote(Key.DirectionRight); true }
                 }
                 Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> {
                     if (controlsVisible) false
                     else {
-                        positionVisible = false
                         player.togglePlayPause()
                         true
                     }
@@ -358,76 +440,84 @@ fun TvVodPlayerScreen(channelLogin: String, vodId: String, title: String, thumbn
         AndroidView(modifier = Modifier.fillMaxSize(), factory = { playerContext -> PlayerView(playerContext).apply {
             useController = false
             this.player = player.exoPlayer
-            // Android TV caption preferences can make external SRT cues tiny or
-            // low-contrast on a 10-foot display. Give the native SubtitleView a
-            // legible TV style while keeping Media3 responsible for cue timing.
-            subtitleView?.apply {
-                setApplyEmbeddedStyles(false)
-                setApplyEmbeddedFontSizes(false)
-                setFixedTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 28f)
-                setStyle(
-                    androidx.media3.ui.CaptionStyleCompat(
-                        android.graphics.Color.WHITE,
-                        android.graphics.Color.argb(190, 0, 0, 0),
-                        android.graphics.Color.TRANSPARENT,
-                        androidx.media3.ui.CaptionStyleCompat.EDGE_TYPE_OUTLINE,
-                        android.graphics.Color.BLACK,
-                        android.graphics.Typeface.DEFAULT_BOLD,
-                    ),
-                )
-                setBottomPaddingFraction(0.1f)
-            }
+            applySubtitleAppearance(this, subtitleAppearance)
             isFocusable = false
             isFocusableInTouchMode = false
             descendantFocusability = android.view.ViewGroup.FOCUS_BLOCK_DESCENDANTS
-        } }, update = { view -> view.player = player.exoPlayer })
+        } }, update = { view ->
+            view.player = player.exoPlayer
+            applySubtitleAppearance(view, subtitleAppearance)
+        })
 
         TvChatOverlay(
             visible = chatVisible,
             messages = state.chatMessages,
-            appSettings = appSettings,
-            appearance = chatAppearance,
+            appSettings = if (chatEditing) appSettings.copy(chatFontSize = draftChatFontSize) else appSettings,
+            appearance = if (chatEditing) draftChatAppearance else chatAppearance,
+            editing = chatEditing,
+            editMode = chatEditMode,
         )
 
         if (controlsVisible) {
+            val fraction = if (playbackDuration > 0L) {
+                (playbackPosition.toFloat() / playbackDuration.toFloat()).coerceIn(0f, 1f)
+            } else 0f
             Column(
-                Modifier.align(Alignment.TopStart).fillMaxWidth().background(Color.Black.copy(alpha = .58f)).padding(horizontal = 32.dp, vertical = 20.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+                Modifier.align(Alignment.TopCenter)
+                    .fillMaxWidth(.94f)
+                    .widthIn(max = 1_360.dp)
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(Color.Black.copy(alpha = .72f))
+                    .padding(horizontal = 20.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                    TvExpressiveIconButton(
+                        icon = ExpressiveIcons.Back,
+                        contentDescription = "Exit video",
+                        onClick = onBack,
+                        style = TvButtonStyle.Tonal,
+                        boxSize = 48.dp,
+                        iconSize = 22.dp,
+                    )
                     Column(Modifier.weight(1f)) {
-                        Text(state.title, style = MaterialTheme.typography.headlineSmall, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text("$channelLogin  ·  VOD", style = MaterialTheme.typography.bodyMedium, color = Color.White.copy(alpha = .75f))
+                        Text(state.title, style = MaterialTheme.typography.titleLarge, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text("$channelLogin  ·  VOD", style = MaterialTheme.typography.bodySmall, color = Color.White.copy(alpha = .76f))
                     }
-                    Text("BACK to exit", color = Color.White.copy(alpha = .72f), style = MaterialTheme.typography.bodySmall)
+                    Text("BACK  Exit", color = Color.White.copy(alpha = .82f), style = MaterialTheme.typography.labelMedium)
                 }
                 (pickerMessage ?: state.subtitleMessage)?.let {
                     Text(it, color = Color.White, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
-                if (state.loading) Text("Loading video…", color = Color.White)
-                state.error?.let { Text(it, color = c.error, style = MaterialTheme.typography.bodyLarge) }
+                if (state.loading) Text("Loading video…", color = Color.White, style = MaterialTheme.typography.bodySmall)
+                state.error?.let { Text(it, color = c.error, style = MaterialTheme.typography.bodyMedium) }
             }
             Column(
-                Modifier.align(Alignment.BottomCenter).fillMaxWidth().background(Color.Black.copy(alpha = .7f)).padding(horizontal = 32.dp, vertical = 18.dp)
-                    .onFocusChanged { controlsHaveFocus = it.hasFocus },
-                verticalArrangement = Arrangement.spacedBy(10.dp),
+                Modifier.align(Alignment.BottomCenter)
+                    .fillMaxWidth(.94f)
+                    .widthIn(max = 1_360.dp)
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(Color.Black.copy(alpha = .78f))
+                    .padding(horizontal = 20.dp, vertical = 14.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text(playerTime(playbackPosition / 1_000), color = Color.White, style = MaterialTheme.typography.titleSmall)
-                    Text(if (chatVisible) "Chat on" else "Chat off", color = Color.White.copy(alpha = .7f), style = MaterialTheme.typography.bodySmall)
-                    Text(playerTime(playbackDuration / 1_000), color = Color.White, style = MaterialTheme.typography.titleSmall)
+                    Text(playerTime(playbackPosition / 1_000), color = Color.White, style = MaterialTheme.typography.titleMedium)
+                    Text(if (chatVisible) "CHAT ON" else "CHAT OFF", color = Color.White.copy(alpha = .72f), style = MaterialTheme.typography.labelMedium)
+                    Text("−${playerTime(((playbackDuration - playbackPosition).coerceAtLeast(0L)) / 1_000)}  /  ${playerTime(playbackDuration / 1_000)}", color = Color.White, style = MaterialTheme.typography.titleMedium)
                 }
-                val fraction = (seekingFraction ?: if (playbackDuration > 0L) playbackPosition.toFloat() / playbackDuration else 0f).coerceIn(0f, 1f)
-                Box(
-                    Modifier.fillMaxWidth().height(32.dp)
-                        .border(2.dp, if (seekBarFocused) c.primary else Color.Transparent, RoundedCornerShape(8.dp))
+                BoxWithConstraints(
+                    Modifier.fillMaxWidth()
+                        .height(40.dp)
+                        .border(2.dp, if (seekBarFocused) c.primary else Color.White.copy(alpha = .24f), RoundedCornerShape(12.dp))
                         .focusRequester(seekFocus)
                         .onKeyEvent { seekEvent ->
-                            if (seekEvent.type != KeyEventType.KeyDown || playbackDuration <= 0L) return@onKeyEvent false
-                            val step = if (playbackDuration > 3_600_000L) 0.01f else 0.025f
+                            if (seekEvent.type != KeyEventType.KeyDown || !seekBarFocused || playbackDuration <= 0L) return@onKeyEvent false
+                            val current = (seekingFraction ?: fraction).coerceIn(0f, 1f)
+                            val step = 10_000f / playbackDuration.toFloat()
                             val target = when (seekEvent.key) {
-                                Key.DirectionLeft -> (fraction - step).coerceAtLeast(0f)
-                                Key.DirectionRight -> (fraction + step).coerceAtMost(1f)
+                                Key.DirectionLeft -> (current - step).coerceAtLeast(0f)
+                                Key.DirectionRight -> (current + step).coerceAtMost(1f)
                                 else -> return@onKeyEvent false
                             }
                             seekingFraction = target
@@ -435,71 +525,185 @@ fun TvVodPlayerScreen(channelLogin: String, vodId: String, title: String, thumbn
                             showControls()
                             true
                         }
-                        .onFocusChanged { seekBarFocused = it.isFocused }
+                        .onFocusChanged {
+                            seekBarFocused = it.isFocused
+                            if (!it.isFocused) seekingFraction = null
+                        }
                         .focusable(),
-                    contentAlignment = Alignment.CenterStart,
                 ) {
-                    Box(Modifier.fillMaxWidth().padding(horizontal = 8.dp).height(6.dp).clip(RoundedCornerShape(8.dp)).background(Color.White.copy(alpha = .28f))) {
-                        Box(Modifier.fillMaxWidth(fraction).fillMaxHeight().background(c.primary))
+                    val trackWidth = (maxWidth - 32.dp).coerceAtLeast(0.dp)
+                    Box(
+                        Modifier.align(Alignment.CenterStart).padding(horizontal = 16.dp)
+                            .fillMaxWidth().height(6.dp).clip(RoundedCornerShape(8.dp))
+                            .background(Color.White.copy(alpha = .28f)),
+                    ) {
+                        Box(Modifier.fillMaxWidth((seekingFraction ?: fraction).coerceIn(0f, 1f)).fillMaxHeight().background(c.primary))
                     }
+                    Box(
+                        Modifier.align(Alignment.CenterStart)
+                            .offset(x = 16.dp + trackWidth * (seekingFraction ?: fraction).coerceIn(0f, 1f) - 9.dp)
+                            .size(18.dp).clip(CircleShape)
+                            .background(if (seekBarFocused) c.primary else Color.White),
+                    )
                 }
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally)) {
                     TvExpressiveButton("−1 min", { showControls(); viewModel.seekBy(-60_000) }, style = TvButtonStyle.Outlined, size = TvButtonSize.Medium)
                     TvExpressiveButton(if (isPlaying) "Pause" else "Play", { showControls(); player.togglePlayPause() }, style = TvButtonStyle.Filled, size = TvButtonSize.Medium, modifier = Modifier.focusRequester(playFocus))
                     TvExpressiveButton("+1 min", { showControls(); viewModel.seekBy(60_000) }, style = TvButtonStyle.Outlined, size = TvButtonSize.Medium)
-                    TvExpressiveButton(if (chatVisible) "Hide chat" else "Show chat", {
-                        chatVisible = !chatVisible
-                        if (chatVisible) controlsVisible = false else showControls()
-                    }, style = TvButtonStyle.Outlined, size = TvButtonSize.Medium)
-                    TvExpressiveButton(
-                        "Load subtitles",
-                        {
-                            showControls()
-                            try {
-                                launcher.launch(arrayOf("application/x-subrip", "text/plain", "application/octet-stream", "*/*"))
-                            } catch (_: ActivityNotFoundException) {
-                                pickerMessage = "No file picker is available on this TV."
-                            }
-                        },
-                        style = TvButtonStyle.Tonal,
-                        size = TvButtonSize.Medium,
-                        modifier = Modifier.focusRequester(subtitleFocus),
-                    )
-                    if (state.subtitleMessage?.contains("loaded", ignoreCase = true) == true) {
-                        TvExpressiveButton("Clear subtitles", { showControls(); viewModel.clearSubtitle() }, style = TvButtonStyle.Outlined, size = TvButtonSize.Medium)
-                    }
-                }
-                Text("Remote: UP position · LEFT/RIGHT seek · CENTER play/pause · MENU chat", color = Color.White.copy(alpha = .72f), style = MaterialTheme.typography.bodySmall, modifier = Modifier.align(Alignment.CenterHorizontally))
-            }
-        }
-
-        if (positionVisible && playbackDuration > 0L) {
-            val fraction = (playbackPosition.toFloat() / playbackDuration).coerceIn(0f, 1f)
-            Column(
-                Modifier.align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .padding(horizontal = 48.dp, vertical = 28.dp)
-                    .clip(RoundedCornerShape(18.dp))
-                    .background(Color.Black.copy(alpha = .84f))
-                    .padding(horizontal = 28.dp, vertical = 20.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                Text("PLAYBACK POSITION", color = Color.White.copy(alpha = .72f), style = MaterialTheme.typography.labelMedium)
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text(playerTime(playbackPosition / 1_000), color = Color.White, style = MaterialTheme.typography.headlineSmall)
-                    Text("−${playerTime(((playbackDuration - playbackPosition).coerceAtLeast(0L)) / 1_000)}", color = Color.White.copy(alpha = .72f), style = MaterialTheme.typography.titleMedium)
-                    Text(playerTime(playbackDuration / 1_000), color = Color.White, style = MaterialTheme.typography.headlineSmall)
-                }
-                Box(Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(8.dp)).background(Color.White.copy(alpha = .28f))) {
-                    Box(Modifier.fillMaxWidth(fraction).fillMaxHeight().background(c.primary))
+                    TvExpressiveButton("Edit chat", ::beginChatEditing, style = TvButtonStyle.Tonal, size = TvButtonSize.Medium, icon = ExpressiveIcons.Chat)
+                    TvExpressiveButton("Subtitles", ::openSubtitlePanel, style = TvButtonStyle.Outlined, size = TvButtonSize.Medium, modifier = Modifier.focusRequester(subtitleFocus))
                 }
                 Text(
-                    "LEFT/RIGHT  ·  ${lastSeekStepMinutes} min jump  ·  Hold for larger jumps",
+                    "DOWN controls  ·  UP seek bar / chat when hidden  ·  LEFT/RIGHT seek when selected  ·  BACK hide controls / exit",
                     color = Color.White.copy(alpha = .78f),
-                    style = MaterialTheme.typography.bodyMedium,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.align(Alignment.CenterHorizontally),
                 )
             }
         }
+
+        if (subtitlePanelVisible) {
+            Dialog(onDismissRequest = { subtitlePanelVisible = false; showControls() }) {
+                Column(
+                    Modifier.fillMaxWidth(0.86f)
+                        .widthIn(max = 860.dp)
+                        .heightIn(max = 700.dp)
+                        .clip(RoundedCornerShape(24.dp))
+                        .background(Color(0xF0181A20))
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 28.dp, vertical = 22.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Subtitles", style = MaterialTheme.typography.headlineSmall, color = Color.White)
+                            Text("Playback continues while this panel is open", style = MaterialTheme.typography.bodySmall, color = Color.White.copy(alpha = .72f))
+                        }
+                        TvExpressiveButton("Done", { subtitlePanelVisible = false; showControls() }, style = TvButtonStyle.Outlined, size = TvButtonSize.Medium)
+                    }
+
+                    Text("TRACK", style = MaterialTheme.typography.labelMedium, color = Color.White.copy(alpha = .72f))
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        TvExpressiveButton(
+                            if (state.subtitleTrackPreference == com.puretv.twitch.tv.player.TvPlayer.OFF_SUBTITLE_TRACK) "✓ Off" else "Off",
+                            { viewModel.selectSubtitleTrack(com.puretv.twitch.tv.player.TvPlayer.OFF_SUBTITLE_TRACK) },
+                            style = if (state.subtitleTrackPreference == com.puretv.twitch.tv.player.TvPlayer.OFF_SUBTITLE_TRACK) TvButtonStyle.Filled else TvButtonStyle.Outlined,
+                            size = TvButtonSize.Medium,
+                            modifier = Modifier.focusRequester(subtitlePanelFocus),
+                        )
+                        TvExpressiveButton(
+                            if (state.subtitleTrackPreference == com.puretv.twitch.tv.player.TvPlayer.AUTO_SUBTITLE_TRACK) "✓ Auto" else "Auto",
+                            { viewModel.selectSubtitleTrack(com.puretv.twitch.tv.player.TvPlayer.AUTO_SUBTITLE_TRACK) },
+                            style = if (state.subtitleTrackPreference == com.puretv.twitch.tv.player.TvPlayer.AUTO_SUBTITLE_TRACK) TvButtonStyle.Filled else TvButtonStyle.Outlined,
+                            size = TvButtonSize.Medium,
+                        )
+                    }
+                    if (subtitleTracks.isEmpty()) {
+                        Text("No supported subtitle tracks are available.", color = Color.White.copy(alpha = .78f), style = MaterialTheme.typography.bodyMedium)
+                    } else {
+                        subtitleTracks.forEach { track ->
+                            val selected = state.subtitleTrackPreference == track.key ||
+                                (state.subtitleTrackPreference == com.puretv.twitch.tv.player.TvPlayer.AUTO_SUBTITLE_TRACK && track.selected)
+                            val language = track.language?.let { " · $it" }.orEmpty()
+                            TvExpressiveButton(
+                                (if (selected) "✓ " else "") + track.label + language,
+                                { viewModel.selectSubtitleTrack(track.key) },
+                                style = if (selected) TvButtonStyle.Tonal else TvButtonStyle.Outlined,
+                                size = TvButtonSize.Medium,
+                            )
+                        }
+                    }
+
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        TvExpressiveButton(
+                            "Load SRT",
+                            {
+                                subtitlePanelVisible = false
+                                try {
+                                    launcher.launch(arrayOf("application/x-subrip", "text/plain", "application/octet-stream", "*/*"))
+                                } catch (_: ActivityNotFoundException) {
+                                    pickerMessage = "No file picker is available on this TV."
+                                    showControls()
+                                }
+                            },
+                            style = TvButtonStyle.Tonal,
+                            size = TvButtonSize.Medium,
+                        )
+                        if (state.subtitleMessage?.contains("SRT subtitles loaded", ignoreCase = true) == true ||
+                            state.subtitleMessage?.contains("Remembered SRT subtitles loaded", ignoreCase = true) == true
+                        ) {
+                            TvExpressiveButton("Clear SRT", { viewModel.clearSubtitle() }, style = TvButtonStyle.Outlined, size = TvButtonSize.Medium)
+                        }
+                    }
+
+                    Text("APPEARANCE", style = MaterialTheme.typography.labelMedium, color = Color.White.copy(alpha = .72f))
+                    SubtitleSettingRow(
+                        label = "Text size",
+                        value = "${subtitleAppearance.sizeSp.toInt()} sp",
+                        onDecrease = { updateSubtitleAppearance { it.copy(sizeSp = (it.sizeSp - 2f).coerceAtLeast(20f)) } },
+                        onIncrease = { updateSubtitleAppearance { it.copy(sizeSp = (it.sizeSp + 2f).coerceAtMost(40f)) } },
+                    )
+                    SubtitleSettingRow(
+                        label = "Text color",
+                        value = subtitleAppearance.textColor.uppercase(),
+                        onDecrease = { updateSubtitleAppearance { it.copy(textColor = subtitleColorStep(it.textColor, -1)) } },
+                        onIncrease = { updateSubtitleAppearance { it.copy(textColor = subtitleColorStep(it.textColor, 1)) } },
+                    )
+                    SubtitleSettingRow(
+                        label = "Background",
+                        value = "${(subtitleAppearance.backgroundOpacity * 100).toInt()}%",
+                        onDecrease = { updateSubtitleAppearance { it.copy(backgroundOpacity = (it.backgroundOpacity - 0.25f).coerceAtLeast(0f)) } },
+                        onIncrease = { updateSubtitleAppearance { it.copy(backgroundOpacity = (it.backgroundOpacity + 0.25f).coerceAtMost(1f)) } },
+                    )
+                    SubtitleSettingRow(
+                        label = "Vertical position",
+                        value = "${(subtitleAppearance.bottomPaddingFraction * 100).toInt()}%",
+                        onDecrease = { updateSubtitleAppearance { it.copy(bottomPaddingFraction = (it.bottomPaddingFraction - 0.05f).coerceAtLeast(0.05f)) } },
+                        onIncrease = { updateSubtitleAppearance { it.copy(bottomPaddingFraction = (it.bottomPaddingFraction + 0.05f).coerceAtMost(0.25f)) } },
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SubtitleSettingRow(label: String, value: String, onDecrease: () -> Unit, onIncrease: () -> Unit) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text(label, color = Color.White, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+        TvExpressiveButton("−", onDecrease, style = TvButtonStyle.Outlined, size = TvButtonSize.Medium)
+        Text(value, color = Color.White, style = MaterialTheme.typography.titleSmall, modifier = Modifier.width(92.dp))
+        TvExpressiveButton("+", onIncrease, style = TvButtonStyle.Outlined, size = TvButtonSize.Medium)
+    }
+}
+
+private fun subtitleColorStep(current: String, delta: Int): String {
+    val colors = listOf("white", "yellow", "cyan")
+    val index = colors.indexOf(current).let { if (it < 0) 0 else it }
+    return colors[(index + delta + colors.size) % colors.size]
+}
+
+private fun applySubtitleAppearance(playerView: PlayerView, appearance: AppSettingsStore.SubtitleAppearance) {
+    playerView.subtitleView?.apply {
+        setApplyEmbeddedStyles(false)
+        setApplyEmbeddedFontSizes(false)
+        setFixedTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, appearance.sizeSp)
+        val foreground = when (appearance.textColor) {
+            "yellow" -> android.graphics.Color.YELLOW
+            "cyan" -> android.graphics.Color.CYAN
+            else -> android.graphics.Color.WHITE
+        }
+        setStyle(
+            androidx.media3.ui.CaptionStyleCompat(
+                foreground,
+                android.graphics.Color.argb((appearance.backgroundOpacity * 255).toInt(), 0, 0, 0),
+                android.graphics.Color.TRANSPARENT,
+                androidx.media3.ui.CaptionStyleCompat.EDGE_TYPE_OUTLINE,
+                android.graphics.Color.BLACK,
+                android.graphics.Typeface.DEFAULT_BOLD,
+            ),
+        )
+        setBottomPaddingFraction(appearance.bottomPaddingFraction)
     }
 }
 

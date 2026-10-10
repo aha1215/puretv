@@ -30,6 +30,7 @@ import com.puretv.twitch.tv.data.db.CachedStreamDao
 import com.puretv.twitch.tv.data.db.toCachedStream
 import com.puretv.twitch.tv.data.db.toStreamInfo
 import io.ktor.client.HttpClient
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
@@ -66,6 +67,34 @@ data class HomeUiState(
     val error: String? = null,
 )
 
+internal fun mergeViewedVods(
+    local: List<AppSettingsStore.ViewedVod>,
+    remote: List<AppSettingsStore.ViewedVod>,
+): List<AppSettingsStore.ViewedVod> {
+    val localById = local.associateBy { it.id }
+    val remoteIds = remote.mapTo(mutableSetOf()) { it.id }
+    val mergedRemote = remote.map { remoteVod ->
+        val localVod = localById[remoteVod.id]
+        val durationSeconds = remoteVod.durationSeconds.takeIf { it > 0L }
+            ?: localVod?.durationSeconds?.coerceAtLeast(0L)
+            ?: 0L
+        (localVod ?: remoteVod).copy(
+            durationSeconds = durationSeconds,
+            positionMs = clampVodPosition(maxOf(localVod?.positionMs ?: 0L, remoteVod.positionMs), durationSeconds),
+        )
+    }
+    return mergedRemote + local.filterNot { it.id in remoteIds }.map { vod ->
+        vod.copy(positionMs = clampVodPosition(vod.positionMs, vod.durationSeconds))
+    }
+}
+
+internal fun clampVodPosition(positionMs: Long, durationSeconds: Long): Long {
+    val safePosition = positionMs.coerceAtLeast(0L)
+    if (durationSeconds <= 0L) return safePosition
+    val durationMs = if (durationSeconds > Long.MAX_VALUE / 1_000L) Long.MAX_VALUE else durationSeconds * 1_000L
+    return minOf(safePosition, durationMs)
+}
+
 /**
  * Landing-screen state. Rebuilt (from the one-shot loader the TV app shipped
  * with) to match the phone app's resilience:
@@ -101,10 +130,18 @@ class HomeViewModel(
     private var lastFollowedVodsRefreshAtMs = 0L
     private var followedVodChannelIds: List<String> = emptyList()
     private var remoteHistoryUnavailableToken: String? = null
+    private var localViewedVods: List<AppSettingsStore.ViewedVod> = emptyList()
+    private var importedViewedVods: List<AppSettingsStore.ViewedVod> = emptyList()
+    private var importedViewedVodsUserId: String? = null
+    private var activeTwitchUserId: String? = null
+    private var accountSessionGeneration = 0
 
     init {
         viewModelScope.launch {
-            settings.viewedVods.collect { vods -> _state.update { it.copy(viewedVods = vods) } }
+            settings.viewedVods.collect { vods ->
+                localViewedVods = vods
+                publishViewedVods()
+            }
         }
         // Cached-first: paint last session's streams instantly, before any network.
         viewModelScope.launch {
@@ -134,6 +171,17 @@ class HomeViewModel(
         viewModelScope.launch {
             settings.flow.collect { prefs ->
                 _state.update { it.copy(isLoggedIn = prefs.accessToken.isNotBlank()) }
+                val nextUserId = prefs.userId.takeIf { it.isNotBlank() }
+                if (nextUserId != activeTwitchUserId) {
+                    activeTwitchUserId = nextUserId
+                    accountSessionGeneration++
+                    viewedVodPositionRefreshJob?.cancel()
+                    importedViewedVods = emptyList()
+                    importedViewedVodsUserId = null
+                    remoteHistoryUnavailableToken = null
+                    publishViewedVods()
+                    if (nextUserId != null) refreshViewedVodPositions(force = true)
+                }
                 if (prefs.accessToken.isBlank()) {
                     userRepository.clearFollows()
                     followedVodsRefreshJob?.cancel()
@@ -144,7 +192,12 @@ class HomeViewModel(
         }
         viewModelScope.launch {
             settings.webResumeSessionRevision.collect {
+                accountSessionGeneration++
+                viewedVodPositionRefreshJob?.cancel()
                 remoteHistoryUnavailableToken = null
+                importedViewedVods = emptyList()
+                importedViewedVodsUserId = null
+                publishViewedVods()
                 if (settings.webResumeSessionLinked.value) refreshViewedVodPositions(force = true)
             }
         }
@@ -273,9 +326,11 @@ class HomeViewModel(
         lastViewedVodPositionRefreshAtMs = now
         viewedVodPositionRefreshJob?.cancel()
         viewedVodPositionRefreshJob = viewModelScope.launch {
+            val generation = accountSessionGeneration
             try {
-                val accessToken = settings.webResumeToken()?.takeIf(String::isNotBlank)
-                    ?: settings.flow.first().accessToken.takeIf(String::isNotBlank)
+                val appSettings = settings.flow.first()
+                val accessToken = settings.webResumeTokenForUser(appSettings.userId)
+                    ?: appSettings.accessToken.takeIf(String::isNotBlank)
                 if (accessToken == null) {
                     remoteHistoryUnavailableToken = null
                     Log.i(TAG, "Skipping remote VOD history refresh: no Twitch session")
@@ -284,7 +339,7 @@ class HomeViewModel(
                 if (remoteHistoryUnavailableToken == accessToken) return@launch
                 remoteHistoryUnavailableToken = null
 
-                val remotePositions = vodRepository.playbackPositions(accessToken).getOrElse { error ->
+                val history = vodRepository.playbackHistory(accessToken).getOrElse { error ->
                     if (error is TwitchResumeHistoryUnavailableException) {
                         remoteHistoryUnavailableToken = accessToken
                         Log.i(
@@ -296,27 +351,53 @@ class HomeViewModel(
                     }
                     return@launch
                 }
+                if (generation != accountSessionGeneration) return@launch
+
+                val historyUserId = history.userId?.takeIf(String::isNotBlank)
+                    ?: settings.flow.first().userId.takeIf(String::isNotBlank)
+                if (historyUserId == null) {
+                    Log.i(TAG, "Twitch VOD history returned no viewer ID; skipping account-scoped import")
+                    return@launch
+                }
+                if (importedViewedVodsUserId != historyUserId) {
+                    importedViewedVods = emptyList()
+                    importedViewedVodsUserId = historyUserId
+                    publishViewedVods()
+                }
+
+                val metadata = vodRepository.videosByIds(history.entries.map { it.vodId })
+                    .associateBy { it.id }
+                if (generation != accountSessionGeneration) return@launch
+                val imported = history.entries.mapNotNull { entry ->
+                    val video = metadata[entry.vodId] ?: return@mapNotNull null
+                    AppSettingsStore.ViewedVod(
+                        id = video.id,
+                        channelLogin = video.userLogin,
+                        title = video.title,
+                        thumbnailUrl = video.thumbnailUrl,
+                        durationSeconds = video.durationSeconds,
+                        lastViewedEpochMs = 0L,
+                        positionMs = clampVodPosition(entry.positionMs, video.durationSeconds),
+                    )
+                }
+                importedViewedVods = imported
+                importedViewedVodsUserId = historyUserId
+                publishViewedVods()
 
                 val recentVods = settings.viewedVods.first()
-                var matched = 0
-                var advanced = 0
-                recentVods.forEach { vod ->
-                    val remotePosition = remotePositions[vod.id] ?: return@forEach
-                    matched++
-                    val localPosition = settings.vodPlaybackPosition(vod.id)
-                    if (remotePosition > localPosition) {
-                        settings.advanceVodPlaybackPosition(vod.id, remotePosition)
-                        advanced++
-                    }
-                }
-                Log.i(TAG, "Twitch VOD history refresh: ${remotePositions.size} remote entries, " +
-                    "$matched/${recentVods.size} local matches, $advanced local positions advanced")
+                val matched = recentVods.count { vod -> history.entries.any { it.vodId == vod.id } }
+                Log.i(TAG, "Twitch VOD history refresh: ${history.entries.size} remote entries, " +
+                    "${imported.size} imported, $matched/${recentVods.size} local matches")
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
                 Log.w(TAG, "Twitch VOD history refresh failed", error)
             }
         }
+    }
+
+    private fun publishViewedVods() {
+        _state.update { it.copy(viewedVods = mergeViewedVods(localViewedVods, importedViewedVods)) }
     }
 
     /**
@@ -547,6 +628,7 @@ class StreamViewModel(
 ) : ViewModel() {
     private val _state = MutableStateFlow(StreamUiState())
     val state: StateFlow<StreamUiState> = _state.asStateFlow()
+    private val emoteNamesReady = CompletableDeferred<Set<String>>()
 
     init {
         viewModelScope.launch {
@@ -556,10 +638,14 @@ class StreamViewModel(
             }.getOrNull()
             _state.update { it.copy(channel = channel, streamInfo = liveInfo, isLoading = false) }
 
+            viewModelScope.launch {
+                val globalEmotes = runCatching { emoteRepository.loadGlobalEmotes() }.getOrDefault(emptyList())
+                val channelEmotes = channel?.let {
+                    runCatching { emoteRepository.loadChannelEmotes(it.id, it.login) }.getOrDefault(emptyList())
+                }.orEmpty()
+                emoteNamesReady.complete((globalEmotes + channelEmotes).mapTo(mutableSetOf()) { it.name })
+            }
             resolvePlayable()
-
-            runCatching { emoteRepository.loadGlobalEmotes() }
-            channel?.let { runCatching { emoteRepository.loadChannelEmotes(it.id, it.login) } }
         }
         viewModelScope.launch {
             adBlockEngine.status.collect { status -> _state.update { it.copy(adBlockStatus = status) } }
@@ -588,7 +674,8 @@ class StreamViewModel(
         viewModelScope.launch {
             val translationSettings = settingsStore.chatTranslation.first()
             if (!translationSettings.enabled) return@launch
-            val translation = chatTranslator.translate(message.message, translationSettings.targetLanguage) ?: return@launch
+            val knownEmoteNames = emoteNamesReady.await()
+            val translation = chatTranslator.translate(message, translationSettings.targetLanguage, knownEmoteNames) ?: return@launch
             _state.update { current ->
                 current.copy(
                     chatMessages = current.chatMessages.map { row ->
