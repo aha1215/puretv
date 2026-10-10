@@ -221,7 +221,11 @@ class TvVodPlayerViewModel(
                     nextOffset = second.toInt()
                     hasMore = true
                     loadingComments = false
-                    translationRequests.values.forEach { it.cancel() }
+                    // Cancelling a translation can run its completion handler immediately,
+                    // which removes that same job from this map. Iterate a snapshot so a
+                    // VOD seek cannot crash the main playback coroutine with CME.
+                    translationRequests.values.toList().forEach { it.cancel() }
+                    translationRequests.clear()
                 }
                 lastSecond = second
                 if (second > 0L && second % 5L == 0L && second != lastPersistedSecond) {
@@ -484,7 +488,7 @@ class TvVodPlayerViewModel(
         val player = player.exoPlayer
         if (player.duration > 0) {
             player.seekTo((player.currentPosition + deltaMs).coerceIn(0L, player.duration))
-            scheduleTwitchPositionSync(debounce = true, force = true)
+            scheduleTwitchPositionSync(debounce = true, force = false)
         }
     }
 
@@ -492,7 +496,7 @@ class TvVodPlayerViewModel(
         val duration = player.exoPlayer.duration
         if (duration > 0L) {
             player.exoPlayer.seekTo(positionMs.coerceIn(0L, duration))
-            scheduleTwitchPositionSync(debounce = true, force = true)
+            scheduleTwitchPositionSync(debounce = true, force = false)
         }
     }
 

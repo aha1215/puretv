@@ -233,6 +233,7 @@ fun TvVodPlayerScreen(channelLogin: String, vodId: String, title: String, thumbn
     val subtitlePanelFocus = remember { FocusRequester() }
     val seekFocus = remember { FocusRequester() }
     var seekingFraction by remember(vodId) { mutableStateOf<Float?>(null) }
+    var pendingRelativeSeekMs by remember(vodId) { mutableStateOf<Long?>(null) }
     var seekBarFocused by remember { mutableStateOf(false) }
     var isPlaying by remember { mutableStateOf(player.exoPlayer.isPlaying) }
     LaunchedEffect(Unit) {
@@ -296,6 +297,12 @@ fun TvVodPlayerScreen(channelLogin: String, vodId: String, title: String, thumbn
         controlsVisible = true
         controlsActivity++
     }
+    fun queueRelativeSeek(deltaMs: Long) {
+        val duration = player.exoPlayer.duration.coerceAtLeast(0L)
+        if (duration <= 0L) return
+        val current = pendingRelativeSeekMs ?: player.exoPlayer.currentPosition.coerceAtLeast(0L)
+        pendingRelativeSeekMs = (current + deltaMs).coerceIn(0L, duration)
+    }
     fun beginChatEditing() {
         resumeChatAfterEdit = player.exoPlayer.isPlaying
         if (resumeChatAfterEdit) player.exoPlayer.pause()
@@ -345,6 +352,23 @@ fun TvVodPlayerScreen(channelLogin: String, vodId: String, title: String, thumbn
             playbackPosition = player.exoPlayer.currentPosition.coerceAtLeast(0L)
             playbackDuration = player.exoPlayer.duration.coerceAtLeast(0L)
             kotlinx.coroutines.delay(500)
+        }
+    }
+    LaunchedEffect(pendingRelativeSeekMs) {
+        val target = pendingRelativeSeekMs ?: return@LaunchedEffect
+        kotlinx.coroutines.delay(350)
+        if (pendingRelativeSeekMs == target) {
+            viewModel.seekTo(target)
+            pendingRelativeSeekMs = null
+        }
+    }
+    LaunchedEffect(seekingFraction, playbackDuration) {
+        val targetFraction = seekingFraction ?: return@LaunchedEffect
+        if (playbackDuration <= 0L) return@LaunchedEffect
+        kotlinx.coroutines.delay(450)
+        if (seekingFraction == targetFraction) {
+            viewModel.seekTo((playbackDuration * targetFraction).toLong())
+            seekingFraction = null
         }
     }
     LaunchedEffect(controlsVisible, controlsActivity) {
@@ -413,7 +437,7 @@ fun TvVodPlayerScreen(channelLogin: String, vodId: String, title: String, thumbn
                 }
                 Key.DirectionLeft, Key.DirectionRight -> {
                     if (!controlsVisible) {
-                        viewModel.seekBy(if (event.key == Key.DirectionLeft) -10_000L else 10_000L)
+                        queueRelativeSeek(if (event.key == Key.DirectionLeft) -10_000L else 10_000L)
                         true
                     } else false
                 }
@@ -433,8 +457,8 @@ fun TvVodPlayerScreen(channelLogin: String, vodId: String, title: String, thumbn
         showControls()
         when (event.key) {
             Key.MediaPlayPause -> { player.togglePlayPause(); true }
-            Key.MediaRewind -> { viewModel.seekBy(-10_000); true }
-            Key.MediaFastForward -> { viewModel.seekBy(10_000); true }
+            Key.MediaRewind -> { queueRelativeSeek(-10_000); true }
+            Key.MediaFastForward -> { queueRelativeSeek(10_000); true }
             else -> false
         }
     }) {
@@ -605,7 +629,6 @@ fun TvVodPlayerScreen(channelLogin: String, vodId: String, title: String, thumbn
                                 else -> return@onKeyEvent false
                             }
                             seekingFraction = target
-                            viewModel.seekTo((playbackDuration * target).toLong())
                             showControls()
                             true
                         }
