@@ -20,6 +20,7 @@ jna = "5.14.0"
 okio = "3.9.1"
 workmanager = "2.10.0"
 coil = "3.0.4"
+benchmark = "1.5.0"
 
 [libraries]
 # Kotlin
@@ -84,6 +85,7 @@ jna = { module = "net.java.dev.jna:jna-jpms", version.ref = "jna" }
 
 # WorkManager (Android only)
 workmanager = { module = "androidx.work:work-runtime-ktx", version.ref = "workmanager" }
+benchmark-macro = { module = "androidx.benchmark:benchmark-macro-junit4", version.ref = "benchmark" }
 
 # Image loading
 coil-compose = { module = "io.coil-kt.coil3:coil-compose", version.ref = "coil" }
@@ -111,5 +113,6 @@ compose-multiplatform = { id = "org.jetbrains.compose", version.ref = "compose-m
 # version-locked to the Kotlin version.
 compose-compiler = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 android-application = { id = "com.android.application", version.ref = "agp" }
+android-test = { id = "com.android.test", version.ref = "agp" }
 android-library = { id = "com.android.library", version.ref = "agp" }
 ksp = { id = "com.google.devtools.ksp", version = "2.0.21-1.0.28" }

@@ -72,6 +72,7 @@ class AppSettingsStore(
         val heightFraction: Float = 0.98f,
         val fadeSeconds: Int = 0,
         val fontFamily: String = "sans",
+        val usernameFontSizeSp: Float? = null,
         val textColor: String = "white",
         val outlineColor: String = "black",
         val outlineWidthDp: Float = 0.75f,
@@ -150,6 +151,8 @@ class AppSettingsStore(
         val TV_CHAT_HEIGHT = floatPreferencesKey("tv_chat_height_fraction")
         val TV_CHAT_FADE_SECONDS = intPreferencesKey("tv_chat_fade_seconds")
         val TV_CHAT_FONT_FAMILY = stringPreferencesKey("tv_chat_font_family")
+        val TV_CHAT_USERNAME_FONT_SIZE = floatPreferencesKey("tv_chat_username_font_size_sp")
+        val TV_CHAT_USERNAME_FONT_SIZE_SET = booleanPreferencesKey("tv_chat_username_font_size_set")
         val TV_CHAT_TEXT_COLOR = stringPreferencesKey("tv_chat_text_color")
         val TV_CHAT_OUTLINE_COLOR = stringPreferencesKey("tv_chat_outline_color")
         val TV_CHAT_OUTLINE_WIDTH = floatPreferencesKey("tv_chat_outline_width")
@@ -195,7 +198,7 @@ class AppSettingsStore(
             adBlockStrategy = prefs[Keys.AD_BLOCK_STRATEGY] ?: "proxy",
             customProxyUrl = prefs[Keys.CUSTOM_PROXY_URL] ?: "",
             chatEnabled = prefs[Keys.CHAT_ENABLED] ?: true,
-            chatFontSize = (prefs[Keys.CHAT_FONT_SIZE] ?: 9f).coerceIn(8f, 14f),
+            chatFontSize = (prefs[Keys.CHAT_FONT_SIZE] ?: 9f).coerceIn(8f, 24f),
             showBadges = prefs[Keys.SHOW_BADGES] ?: true,
             showBttvEmotes = prefs[Keys.SHOW_BTTV] ?: true,
             show7tvEmotes = prefs[Keys.SHOW_7TV] ?: true,
@@ -243,6 +246,10 @@ class AppSettingsStore(
             heightFraction = (prefs[Keys.TV_CHAT_HEIGHT] ?: 0.98f).coerceIn(0.2f, 0.98f),
             fadeSeconds = (prefs[Keys.TV_CHAT_FADE_SECONDS] ?: 0).coerceIn(0, 120),
             fontFamily = prefs[Keys.TV_CHAT_FONT_FAMILY].orEmpty().takeIf { it in setOf("sans", "serif", "mono") } ?: "sans",
+            // Null follows the message size until the user sets an independent username size.
+            usernameFontSizeSp = if (prefs[Keys.TV_CHAT_USERNAME_FONT_SIZE_SET] == true) {
+                prefs[Keys.TV_CHAT_USERNAME_FONT_SIZE]?.coerceIn(8f, 24f)
+            } else null,
             textColor = prefs[Keys.TV_CHAT_TEXT_COLOR].orEmpty().takeIf { it in setOf("white", "warm", "yellow") } ?: "white",
             outlineColor = prefs[Keys.TV_CHAT_OUTLINE_COLOR].orEmpty().takeIf { it in setOf("black", "navy", "white") } ?: "black",
             outlineWidthDp = (prefs[Keys.TV_CHAT_OUTLINE_WIDTH] ?: 0.75f).coerceIn(0f, 6f),
@@ -269,6 +276,13 @@ class AppSettingsStore(
             prefs[Keys.TV_CHAT_HEIGHT] = next.heightFraction.coerceIn(0.2f, 0.98f)
             prefs[Keys.TV_CHAT_FADE_SECONDS] = next.fadeSeconds.coerceIn(0, 120)
             prefs[Keys.TV_CHAT_FONT_FAMILY] = next.fontFamily.takeIf { it in setOf("sans", "serif", "mono") } ?: "sans"
+            next.usernameFontSizeSp?.coerceIn(8f, 24f)?.let {
+                prefs[Keys.TV_CHAT_USERNAME_FONT_SIZE] = it
+                prefs[Keys.TV_CHAT_USERNAME_FONT_SIZE_SET] = true
+            } ?: run {
+                prefs.remove(Keys.TV_CHAT_USERNAME_FONT_SIZE)
+                prefs[Keys.TV_CHAT_USERNAME_FONT_SIZE_SET] = false
+            }
             prefs[Keys.TV_CHAT_TEXT_COLOR] = next.textColor.takeIf { it in setOf("white", "warm", "yellow") } ?: "white"
             prefs[Keys.TV_CHAT_OUTLINE_COLOR] = next.outlineColor.takeIf { it in setOf("black", "navy", "white") } ?: "black"
             prefs[Keys.TV_CHAT_OUTLINE_WIDTH] = next.outlineWidthDp.coerceIn(0f, 6f)
@@ -475,7 +489,7 @@ class AppSettingsStore(
             prefs[Keys.AD_BLOCK_STRATEGY] = next.adBlockStrategy
             prefs[Keys.CUSTOM_PROXY_URL] = next.customProxyUrl
             prefs[Keys.CHAT_ENABLED] = next.chatEnabled
-            prefs[Keys.CHAT_FONT_SIZE] = next.chatFontSize.coerceIn(8f, 14f)
+            prefs[Keys.CHAT_FONT_SIZE] = next.chatFontSize.coerceIn(8f, 24f)
             prefs[Keys.SHOW_BADGES] = next.showBadges
             prefs[Keys.SHOW_BTTV] = next.showBttvEmotes
             prefs[Keys.SHOW_7TV] = next.show7tvEmotes

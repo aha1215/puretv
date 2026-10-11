@@ -60,6 +60,7 @@ import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import coil3.compose.AsyncImage
 import coil3.ImageLoader
+import coil3.gif.AnimatedImageDecoder
 import coil3.gif.GifDecoder
 import com.puretv.twitch.core.model.AppSettings
 import com.puretv.twitch.core.model.Badge
@@ -76,6 +77,25 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
 private val ClockFormatter = DateTimeFormatter.ofPattern("HH:mm")
+
+/** One process-wide Coil pipeline shares decoded and disk-cached emote assets across chat surfaces. */
+private object TvEmoteImageLoader {
+    @Volatile
+    private var instance: ImageLoader? = null
+
+    fun get(context: android.content.Context): ImageLoader = instance ?: synchronized(this) {
+        instance ?: ImageLoader.Builder(context.applicationContext)
+            .components {
+                // On Android 9+, delegate GIF/WebP frame playback to ImageDecoder.
+                // Coil's Movie-backed GifDecoder decodes frames in software and can
+                // consume substantial CPU when a TV chat rail has many animated emotes.
+                if (android.os.Build.VERSION.SDK_INT >= 28) add(AnimatedImageDecoder.Factory())
+                add(GifDecoder.Factory())
+            }
+            .build()
+            .also { instance = it }
+    }
+}
 
 enum class TvChatEditDirection { Left, Right, Up, Down }
 enum class TvChatEditMode { Reposition, Resize, FontSize }
@@ -126,9 +146,7 @@ fun TvChatOverlay(
     val c = PureTvTvTheme.colors
     val shapes = PureTvTvTheme.shapes
     val context = LocalContext.current
-    val imageLoader = remember(context) {
-        ImageLoader.Builder(context).components { add(GifDecoder.Factory()) }.build()
-    }
+    val imageLoader = remember(context) { TvEmoteImageLoader.get(context) }
     val listState = rememberLazyListState()
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     val visibleMessages = remember(messages, appearance.hideGiftSubs) {
@@ -226,6 +244,7 @@ private fun TvChatMessageRow(
     val messageColor = configuredChatTextColor(appearance.textColor)
     val nameColor = if (appearance.useTwitchNameColors) twitchNameColor else messageColor
     val emoteSizeSp = with(LocalDensity.current) { appearance.emoteSizeDp.dp.toSp().value }
+    val usernameFontSizeSp = appearance.usernameFontSizeSp ?: appSettings.chatFontSize
     val timestamp = remember(message.timestamp) {
         runCatching {
             Instant.ofEpochMilli(message.timestamp).atZone(ZoneId.systemDefault()).format(ClockFormatter)
@@ -242,7 +261,9 @@ private fun TvChatMessageRow(
         appSettings.showBttvEmotes,
         appSettings.showFfzEmotes,
         appSettings.show7tvEmotes,
+        appSettings.chatFontSize,
         appearance.emoteSizeDp,
+        appearance.usernameFontSizeSp,
         nameColor,
         c.onSurfaceVariant,
         timestamp,
@@ -256,6 +277,7 @@ private fun TvChatMessageRow(
             timestamp = timestamp,
             imageLoader = imageLoader,
             emoteSizeSp = emoteSizeSp,
+            usernameFontSizeSp = usernameFontSizeSp,
         )
     }
 
@@ -299,6 +321,7 @@ private fun buildTvChatBody(
     timestamp: String,
     imageLoader: ImageLoader,
     emoteSizeSp: Float,
+    usernameFontSizeSp: Float,
 ): Pair<AnnotatedString, Map<String, InlineTextContent>> {
     val inline = LinkedHashMap<String, InlineTextContent>()
     val text = buildAnnotatedString {
@@ -314,7 +337,7 @@ private fun buildTvChatBody(
                     if (appendTvBadge(index, badge.setId, inline)) append(' ')
                 }
             }
-            withStyle(SpanStyle(color = nameColor, fontWeight = FontWeight.Bold)) {
+            withStyle(SpanStyle(color = nameColor, fontWeight = FontWeight.Bold, fontSize = usernameFontSizeSp.coerceIn(8f, 24f).sp)) {
                 append(message.displayName)
             }
             append(": ")
@@ -516,9 +539,7 @@ fun TvChatStylePreview(
     val c = PureTvTvTheme.colors
     val shapes = PureTvTvTheme.shapes
     val context = LocalContext.current
-    val imageLoader = remember(context) {
-        ImageLoader.Builder(context).components { add(GifDecoder.Factory()) }.build()
-    }
+    val imageLoader = remember(context) { TvEmoteImageLoader.get(context) }
     val previewChat = remember(messages) { messages.ifEmpty { previewMessages() } }
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(appearance.fadeSeconds) {
@@ -608,7 +629,7 @@ private fun chatBadgeStyle(setId: String): Pair<String, Color>? {
 
 @Composable
 private fun compactChatTextStyle(fontSize: Float, family: String, hasEmotes: Boolean = false, emoteSizeSp: Float): TextStyle {
-    val size = fontSize.coerceIn(8f, 14f)
+    val size = fontSize.coerceIn(8f, 24f)
     return MaterialTheme.typography.bodySmall.copy(
         fontSize = size.sp,
         lineHeight = (if (hasEmotes) maxOf(size + 1f, emoteSizeSp) else size + 1f).sp,

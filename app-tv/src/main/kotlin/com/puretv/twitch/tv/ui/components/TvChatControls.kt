@@ -57,13 +57,22 @@ fun TvChatValueSlider(
     Column(
         modifier.fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
-            .background(if (focused.value) c.primary.copy(alpha = .16f) else Color.Transparent)
-            .border(if (focused.value) 2.dp else 0.dp, if (focused.value) c.primary else Color.Transparent, RoundedCornerShape(12.dp))
-            .padding(horizontal = 8.dp, vertical = 2.dp),
+            .background(if (focused.value) Color(0xFFFFD54F) else Color.Transparent)
+            .border(if (focused.value) 4.dp else 0.dp, if (focused.value) Color.Black else Color.Transparent, RoundedCornerShape(12.dp))
+            .padding(horizontal = 10.dp, vertical = 4.dp),
     ) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            androidx.tv.material3.Text(label, color = if (focused.value) c.primary else c.onSurfaceVariant, style = androidx.tv.material3.MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
-            androidx.tv.material3.Text(valueText, color = c.onSurface, style = androidx.tv.material3.MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            androidx.tv.material3.Text(label, color = if (focused.value) Color.Black else c.onSurfaceVariant, style = androidx.tv.material3.MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+            if (focused.value) {
+                androidx.tv.material3.Text(
+                    "FOCUSED",
+                    color = Color.Black,
+                    style = androidx.tv.material3.MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.ExtraBold,
+                    modifier = Modifier.padding(end = 10.dp),
+                )
+            }
+            androidx.tv.material3.Text(valueText, color = if (focused.value) Color.Black else c.onSurface, style = androidx.tv.material3.MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
         }
         Slider(
             value = value.coerceIn(valueRange),
@@ -72,8 +81,10 @@ fun TvChatValueSlider(
             steps = steps,
             modifier = Modifier
                 .fillMaxWidth()
+                // Observe before the focus target so this callback sees the
+                // focus state of this slider (modifier order matters here).
+                .onFocusChanged { focused.value = it.hasFocus }
                 .focusable()
-                .onFocusChanged { focused.value = it.isFocused }
                 .onPreviewKeyEvent { event ->
                     if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
                     val delta = when (event.key) {
@@ -124,7 +135,11 @@ fun TvChatEditorDialog(
                 Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()).focusGroup(),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                TvChatValueSlider("Font size", fontSize, 8f..14f, 1f, "${fontSize.toInt()} sp", modifier = Modifier.focusRequester(focusRequester), onValueChange = onFontSizeChange)
+                TvChatValueSlider("Message font size", fontSize, 8f..24f, 1f, "${fontSize.toInt()} sp", modifier = Modifier.focusRequester(focusRequester), onValueChange = onFontSizeChange)
+                val usernameSize = appearance.usernameFontSizeSp ?: fontSize
+                TvChatValueSlider("Username font size", usernameSize, 8f..24f, 1f, "${usernameSize.toInt()} sp") {
+                    onAppearanceChange(appearance.copy(usernameFontSizeSp = it))
+                }
                 TvChatValueSlider("Emote size", appearance.emoteSizeDp, 16f..40f, 2f, "${appearance.emoteSizeDp.roundToInt()} dp") { onAppearanceChange(appearance.copy(emoteSizeDp = it)) }
                 TvChatValueSlider("Outline width", appearance.outlineWidthDp, 0f..6f, 1f, "${appearance.outlineWidthDp} dp") { onAppearanceChange(appearance.copy(outlineWidthDp = it)) }
                 TvChatValueSlider("Background", appearance.opacity, 0f..1f, .05f, "${(appearance.opacity * 100).roundToInt()}%") { onAppearanceChange(appearance.copy(opacity = it)) }

@@ -67,6 +67,16 @@ android {
             applicationIdSuffix = ".debug"
             isDebuggable = true
         }
+        create("benchmark") {
+            initWith(getByName("release"))
+            // Keep the target package distinct from the benchmark test APK package.
+            applicationIdSuffix = ".perf"
+            versionNameSuffix = "-benchmark"
+            isMinifyEnabled = false
+            isShrinkResources = false
+            signingConfig = signingConfigs.getByName("debug")
+            matchingFallbacks += listOf("release")
+        }
     }
 
     compileOptions {
@@ -166,6 +176,7 @@ dependencies {
     implementation(libs.media3.ui)
     implementation(libs.media3.datasource.okhttp)
     implementation(libs.media3.session)
+    implementation("androidx.profileinstaller:profileinstaller:1.4.1")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
     implementation(libs.room.runtime)

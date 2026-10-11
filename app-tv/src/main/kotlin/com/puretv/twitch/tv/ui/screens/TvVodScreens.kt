@@ -347,16 +347,22 @@ fun TvVodPlayerScreen(channelLogin: String, vodId: String, title: String, thumbn
     }
     var playbackPosition by remember { mutableStateOf(0L) }
     var playbackDuration by remember { mutableStateOf(0L) }
-    LaunchedEffect(player) {
+    LaunchedEffect(player, controlsVisible, chatEditing) {
+        // Playback keeps running when the controls are hidden, but neither the
+        // timeline nor the chat editor preview needs its position in that state.
+        // Avoid invalidating the whole player and chat composition twice a second.
+        if (!controlsVisible && !chatEditing) return@LaunchedEffect
         while (true) {
-            playbackPosition = player.exoPlayer.currentPosition.coerceAtLeast(0L)
-            playbackDuration = player.exoPlayer.duration.coerceAtLeast(0L)
+            val currentPosition = player.exoPlayer.currentPosition.coerceAtLeast(0L)
+            val currentDuration = player.exoPlayer.duration.coerceAtLeast(0L)
+            if (playbackPosition != currentPosition) playbackPosition = currentPosition
+            if (playbackDuration != currentDuration) playbackDuration = currentDuration
             kotlinx.coroutines.delay(500)
         }
     }
     LaunchedEffect(pendingRelativeSeekMs) {
         val target = pendingRelativeSeekMs ?: return@LaunchedEffect
-        kotlinx.coroutines.delay(350)
+        kotlinx.coroutines.delay(180)
         if (pendingRelativeSeekMs == target) {
             viewModel.seekTo(target)
             pendingRelativeSeekMs = null
@@ -365,7 +371,7 @@ fun TvVodPlayerScreen(channelLogin: String, vodId: String, title: String, thumbn
     LaunchedEffect(seekingFraction, playbackDuration) {
         val targetFraction = seekingFraction ?: return@LaunchedEffect
         if (playbackDuration <= 0L) return@LaunchedEffect
-        kotlinx.coroutines.delay(450)
+        kotlinx.coroutines.delay(200)
         if (seekingFraction == targetFraction) {
             viewModel.seekTo((playbackDuration * targetFraction).toLong())
             seekingFraction = null

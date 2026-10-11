@@ -226,6 +226,7 @@ class TvVodPlayerViewModel(
                     // VOD seek cannot crash the main playback coroutine with CME.
                     translationRequests.values.toList().forEach { it.cancel() }
                     translationRequests.clear()
+                    if (isSavedBundle) loadSavedChatInBackground(second)
                 }
                 lastSecond = second
                 if (second > 0L && second % 5L == 0L && second != lastPersistedSecond) {
@@ -376,28 +377,26 @@ class TvVodPlayerViewModel(
     /** Switch this player to its SMB copy without leaving the player route. */
     fun playSavedBundle() = viewModelScope.launch {
         _state.value = _state.value.copy(loading = true, error = null)
-        runCatching {
-            LoadedVod(
-                url = smbDownloads.mediaUri(vodId),
-                subtitleUri = runCatching { smbDownloads.subtitleUri(vodId) }.getOrNull()
-                    ?: settingsStore.vodSubtitleUri(vodId)?.let(android.net.Uri::parse),
-                positionMs = clampVodPosition(settingsStore.vodPlaybackPosition(vodId), durationSeconds),
-                subtitleTrack = TvPlayer.AUTO_SUBTITLE_TRACK,
-                savedBundle = true,
-            )
-        }.onSuccess { loaded ->
+        runCatching { smbDownloads.mediaUri(vodId) }.onSuccess { url ->
+            val positionMs = clampVodPosition(settingsStore.vodPlaybackPosition(vodId), durationSeconds)
             savedChat = null
-            isSavedBundle = loaded.savedBundle || loaded.savedChat != null
-            player.playVod(loaded.url, loaded.subtitleUri, loaded.positionMs)
+            isSavedBundle = true
+            player.playVod(url, null, positionMs)
             _state.value = _state.value.copy(
                 loading = false,
                 error = null,
                 chatMessages = emptyList(),
                 subtitleMessage = null,
-                subtitleTrackPreference = loaded.subtitleTrack,
+                subtitleTrackPreference = TvPlayer.AUTO_SUBTITLE_TRACK,
                 savedBundle = true,
             )
-            if (loaded.savedBundle) loadSavedChatInBackground()
+            loadSavedChatInBackground(positionMs / 1_000L)
+            // Archive scanning and subtitle discovery are optional and must not gate playback.
+            viewModelScope.launch {
+                val subtitle = runCatching { smbDownloads.subtitleUri(vodId) }.getOrNull()
+                    ?: settingsStore.vodSubtitleUri(vodId)?.let(android.net.Uri::parse)
+                if (subtitle != null) runCatching { player.setExternalSubtitle(subtitle) }
+            }
         }.onFailure { error ->
             _state.value = _state.value.copy(
                 loading = false,
@@ -406,25 +405,13 @@ class TvVodPlayerViewModel(
         }
     }
 
-    /** Chat archives can be huge for long VODs. Start the video first, then load timed chat off the playback path. */
-    private fun loadSavedChatInBackground() {
+    /** Load saved chat independently after starting the video so it can appear as soon as its sidecar is ready. */
+    private fun loadSavedChatInBackground(second: Long = player.exoPlayer.currentPosition.coerceAtLeast(0L) / 1_000L) {
         savedChatLoadJob?.cancel()
         savedChatLoadJob = viewModelScope.launch {
             _state.value = _state.value.copy(savedChatLoading = true)
-            // A TwitchDownloader archive for a long VOD can be large enough to
-            // compete with MP4 index parsing on a TV. Let Media3 reach READY
-            // before spending CPU and memory decoding the saved chat archive.
-            kotlinx.coroutines.withTimeoutOrNull(2 * 60_000L) {
-                while (player.exoPlayer.playbackState != androidx.media3.common.Player.STATE_READY) {
-                    kotlinx.coroutines.delay(250)
-                }
-            }
-            if (player.exoPlayer.playbackState != androidx.media3.common.Player.STATE_READY) {
-                _state.value = _state.value.copy(savedChatLoading = false)
-                return@launch
-            }
             val messages = try {
-                smbDownloads.chat(vodId)
+                smbDownloads.chatWindow(vodId, second)
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
                 throw cancelled
             } catch (_: Exception) {
@@ -433,23 +420,6 @@ class TvVodPlayerViewModel(
             savedChat = messages
             publishChat(player.exoPlayer.currentPosition.coerceAtLeast(0L) / 1_000L)
             _state.value = _state.value.copy(savedChatLoading = false)
-            // Only use the archive fallback when the sidecar contains no saved
-            // Twitch emote metadata at all. Most ordinary chat messages have an
-            // empty emote list, so `any { empty }` re-read and decoded the huge
-            // original archive on every playback despite emotes already being saved.
-            if (messages.isNotEmpty() && messages.none { it.twitchEmotes.isNotEmpty() }) {
-                val enriched = try {
-                    smbDownloads.attachArchivedEmotes(vodId, messages)
-                } catch (cancelled: kotlinx.coroutines.CancellationException) {
-                    throw cancelled
-                } catch (_: Exception) {
-                    messages
-                }
-                if (enriched !== messages) {
-                    savedChat = enriched
-                    publishChat(player.exoPlayer.currentPosition.coerceAtLeast(0L) / 1_000L)
-                }
-            }
         }
     }
 

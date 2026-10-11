@@ -96,6 +96,9 @@ data class SavedChatMessage(
 )
 
 @Serializable
+private data class ChatCacheManifest(val version: Int = 1)
+
+@Serializable
 data class SavedTwitchEmote(val id: String, val name: String)
 
 @Serializable
@@ -537,6 +540,7 @@ class SmbVodDownloads(
             }
             files.writeText(tempRoot.resolve("index.m3u8"), rewrittenPlaylist)
             files.writeText(tempRoot.resolve("chat.json"), JSON.encodeToString(chat))
+            writeChatCache(files, tempRoot.resolve("chat-cache"), chat)
             files.writeText(
                 tempRoot.resolve("metadata.json"),
                 JSON.encodeToString(SavedVod(video.id, video.userLogin, video.title, video.durationSeconds, video.thumbnailUrl)),
@@ -598,23 +602,61 @@ class SmbVodDownloads(
         SmbFiles(target).use { files ->
             val parent = smbFolderPath(target.settings.folder).resolve("puretv-vods")
             val root = parent.resolve(smbFolderPath(id))
-            val metadata = runCatching { JSON.decodeFromString<SavedVod>(files.readText(root.resolve("metadata.json"))) }.getOrNull()
-            val archive = metadata?.let { findTwitchDownloaderArchive(files, target, parent, root, id, it.channelLogin) }
-            val segmentedCopy = archive?.chatPath?.parent?.resolve("puretv-hls")?.resolve("index.m3u8")
-                ?.takeIf(files::exists)
-            val path = segmentedCopy ?: archive?.mediaPath ?: root.resolve("index.m3u8")
+            val path = root.resolve("index.m3u8")
             val uri = "smb://${target.settings.host}/${target.settings.share}/${path.toString().replace('\\', '/').trim('/')}"
             uri
         }
     }
 
-    suspend fun chat(id: String): List<SavedChatMessage> = withContext(Dispatchers.IO) {
+    suspend fun chat(id: String): List<SavedChatMessage> {
         val target = connectionSettings()
-        SmbFiles(target).use { files ->
+        val text = withContext(Dispatchers.IO) { SmbFiles(target).use { files ->
             val parent = smbFolderPath(target.settings.folder).resolve("puretv-vods")
             val root = parent.resolve(smbFolderPath(id))
-            JSON.decodeFromString<List<SavedChatMessage>>(files.readText(root.resolve("chat.json")))
+            files.readText(root.resolve("chat.json"))
+        } }
+        return withContext(Dispatchers.Default) {
+            JSON.decodeFromString<List<SavedChatMessage>>(text)
         }
+    }
+
+    /** Reads only the minute shards surrounding the requested point on repeat plays. */
+    suspend fun chatWindow(id: String, second: Long): List<SavedChatMessage> = withContext(Dispatchers.IO) {
+        val target = connectionSettings()
+        SmbFiles(target).use { files ->
+            val base = smbFolderPath(target.settings.folder).resolve("puretv-vods").resolve(smbFolderPath(id))
+            val cache = base.resolve("chat-cache")
+            val manifest = runCatching { JSON.decodeFromString<ChatCacheManifest>(files.readText(cache.resolve("manifest.json"))) }.getOrNull()
+            if (manifest?.version == CHAT_CACHE_VERSION) {
+                runCatching {
+                    val result = mutableListOf<SavedChatMessage>()
+                    val lastMinute = (second.coerceAtLeast(0) / CHAT_CACHE_MINUTE_SECONDS).toInt()
+                    for (minute in lastMinute downTo 0) {
+                        val file = cache.resolve("${minute.toString().padStart(5, '0')}.json")
+                        if (files.exists(file)) result += JSON.decodeFromString<List<SavedChatMessage>>(files.readText(file))
+                            .filter { it.offsetSeconds.toLong() <= second }
+                        if (result.size >= SAVED_CHAT_WINDOW) break
+                    }
+                    result.sortedBy { it.offsetSeconds }.takeLast(SAVED_CHAT_WINDOW)
+                }.getOrNull()?.let { return@withContext it }
+            }
+            // Legacy bundles have no cache. Decode once, install the cache, and use it thereafter.
+            val decoded = runCatching { JSON.decodeFromString<List<SavedChatMessage>>(files.readText(base.resolve("chat.json"))) }
+                .getOrElse { return@withContext emptyList() }
+            writeChatCache(files, cache, decoded)
+            decoded.filter { it.offsetSeconds.toLong() <= second }
+                .sortedBy { it.offsetSeconds }.takeLast(SAVED_CHAT_WINDOW)
+        }
+    }
+
+    private fun writeChatCache(files: SmbFiles, cache: Path, messages: List<SavedChatMessage>) {
+        files.deleteTree(cache)
+        files.createDirectories(cache)
+        messages.groupBy { it.offsetSeconds.coerceAtLeast(0) / CHAT_CACHE_MINUTE_SECONDS.toInt() }
+            .toSortedMap().forEach { (minute, entries) ->
+                files.writeText(cache.resolve("${minute.toString().padStart(5, '0')}.json"), JSON.encodeToString(entries))
+            }
+        files.writeText(cache.resolve("manifest.json"), JSON.encodeToString(ChatCacheManifest()))
     }
 
     /** Loads optional TwitchDownloader emote metadata after the saved chat is already visible. */
@@ -833,6 +875,9 @@ class SmbVodDownloads(
         URI(url).path.substringAfterLast('.', "ts").takeIf { it.matches(Regex("[A-Za-z0-9]{1,8}")) } ?: "ts"
 
     companion object {
+        private const val CHAT_CACHE_VERSION = 1
+        private const val CHAT_CACHE_MINUTE_SECONDS = 60L
+        private const val SAVED_CHAT_WINDOW = 150
         private const val MAX_COMMENT_PAGES = 20_000
         private const val PROGRESS_UPDATE_INTERVAL_NANOS = 250_000_000L
         private const val SMB_QUERY_TIMEOUT_SECONDS = 15L

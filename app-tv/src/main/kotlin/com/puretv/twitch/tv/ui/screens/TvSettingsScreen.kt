@@ -417,7 +417,11 @@ private fun ChatAppearanceSection(
                     verticalAlignment = Alignment.Top,
                 ) {
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        TvChatValueSlider("Font size", settings.chatFontSize, 8f..14f, 1f, "${settings.chatFontSize.toInt()} sp", onValueChange = onFontSize)
+                        TvChatValueSlider("Message font size", settings.chatFontSize, 8f..24f, 1f, "${settings.chatFontSize.toInt()} sp", onValueChange = onFontSize)
+                        val usernameSize = appearance.usernameFontSizeSp ?: settings.chatFontSize
+                        TvChatValueSlider("Username font size", usernameSize, 8f..24f, 1f, "${usernameSize.toInt()} sp") { value ->
+                            onAppearanceChange { it.copy(usernameFontSizeSp = value) }
+                        }
                         TvChatValueSlider("Emote size", appearance.emoteSizeDp, 16f..40f, 2f, "${appearance.emoteSizeDp.toInt()} dp") { value ->
                             onAppearanceChange { it.copy(emoteSizeDp = value) }
                         }

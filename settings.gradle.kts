@@ -21,4 +21,5 @@ dependencyResolutionManagement {
 include(":core")
 include(":app-android")
 include(":app-tv")
+include(":benchmark-tv")
 include(":app-windows")
