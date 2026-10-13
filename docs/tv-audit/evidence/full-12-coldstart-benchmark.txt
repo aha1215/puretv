@@ -1,0 +1,34 @@
+﻿# Cold-start benchmark — TvExperienceBenchmark#coldStartup
+# Device: onn. Streaming Device 4K Pro (192.168.0.110:5555), Android 14 / API 34
+# Build: app-tv full release, versionCode 16 / versionName 1.3.2
+# Harness: scripts/benchmark-tv-smb.ps1 -Methods coldStartup (StartupTimingMetric + MemoryUsageMetric(Max),
+#          StartupMode.COLD, CompilationMode.None, 5 iterations)
+
+TvExperienceBenchmark_coldStartup
+  memoryHeapSizeMaxKb      [min  15,102.0](file://TvExperienceBenchmark_coldStartup_iter001_2026-10-13-04-33-19.perfetto-trace),   [median  15,706.0](file://TvExperienceBenchmark_coldStartup_iter002_2026-10-13-04-34-08.perfetto-trace),   [max  19,389.0](file://TvExperienceBenchmark_coldStartup_iter000_2026-10-13-04-32-30.perfetto-trace)
+  memoryRssAnonMaxKb       [min  60,964.0](file://TvExperienceBenchmark_coldStartup_iter001_2026-10-13-04-33-19.perfetto-trace),   [median  61,828.0](file://TvExperienceBenchmark_coldStartup_iter002_2026-10-13-04-34-08.perfetto-trace),   [max  65,856.0](file://TvExperienceBenchmark_coldStartup_iter000_2026-10-13-04-32-30.perfetto-trace)
+  memoryRssFileMaxKb       [min 119,972.0](file://TvExperienceBenchmark_coldStartup_iter001_2026-10-13-04-33-19.perfetto-trace),   [median 120,708.0](file://TvExperienceBenchmark_coldStartup_iter002_2026-10-13-04-34-08.perfetto-trace),   [max 130,488.0](file://TvExperienceBenchmark_coldStartup_iter000_2026-10-13-04-32-30.perfetto-trace)
+  timeToInitialDisplayMs   [min   1,985.8](file://TvExperienceBenchmark_coldStartup_iter004_2026-10-13-04-35-46.perfetto-trace),   [median   2,012.7](file://TvExperienceBenchmark_coldStartup_iter002_2026-10-13-04-34-08.perfetto-trace),   [max   2,277.6](file://TvExperienceBenchmark_coldStartup_iter000_2026-10-13-04-32-30.perfetto-trace)
+    Traces: Iteration [0](file://TvExperienceBenchmark_coldStartup_iter000_2026-10-13-04-32-30.perfetto-trace) [1](file://TvExperienceBenchmark_coldStartup_iter001_2026-10-13-04-33-19.perfetto-trace) [2](file://TvExperienceBenchmark_coldStartup_iter002_2026-10-13-04-34-08.perfetto-trace) [3](file://TvExperienceBenchmark_coldStartup_iter003_2026-10-13-04-34-57.perfetto-trace) [4](file://TvExperienceBenchmark_coldStartup_iter004_2026-10-13-04-35-46.perfetto-trace)
+
+INSTRUMENTATION_STATUS: android.studio.v2display.benchmark=NOTE: Your device is running a version of ART where method tracing is known to
+
+Time: 259.583
+OK (1 test)
+INSTRUMENTATION_STATUS: time_to_initial_display_millis_max=2277.61721
+INSTRUMENTATION_STATUS: time_to_initial_display_millis_median=2012.714293
+INSTRUMENTATION_STATUS: time_to_initial_display_millis_min=1985.764085
+INSTRUMENTATION_STATUS: time_to_initial_display_millis_stddev=123.76450638565694
+INSTRUMENTATION_STATUS: memory_heap_size_max_kb_max=19389.0
+INSTRUMENTATION_STATUS: memory_heap_size_max_kb_median=15706.0
+INSTRUMENTATION_STATUS: memory_heap_size_max_kb_min=15102.0
+INSTRUMENTATION_STATUS: memory_heap_size_max_kb_stddev=1767.615399344552
+INSTRUMENTATION_STATUS: memory_rss_anon_max_kb_max=65856.0
+INSTRUMENTATION_STATUS: memory_rss_anon_max_kb_median=61828.0
+INSTRUMENTATION_STATUS: memory_rss_anon_max_kb_min=60964.0
+INSTRUMENTATION_STATUS: memory_rss_anon_max_kb_stddev=1934.8438696701085
+INSTRUMENTATION_STATUS: memory_rss_file_max_kb_max=130488.0
+INSTRUMENTATION_STATUS: memory_rss_file_max_kb_median=120708.0
+INSTRUMENTATION_STATUS: memory_rss_file_max_kb_min=119972.0
+INSTRUMENTATION_STATUS: memory_rss_file_max_kb_stddev=4449.854469530436
+
