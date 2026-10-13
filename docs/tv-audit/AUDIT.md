@@ -80,11 +80,11 @@ The built APK is signed with **the fork's own key** (`puretv-local-release.jks`)
 | saved VODs (offline) | already fine | `full-09` |
 | Home browse while signed in | already fine | `full-01`; `play-07` after sign-in |
 | Following — fresh sign-in | already fine | real live follows list (`play-08`) |
-| Following — existing `full` install | **improved** | root cause found (§6b); now surfaces "Your Twitch session expired · Sign in again" instead of a dead list (`full-13`) |
+| Following — existing `full` install | **improved** | root cause found (§6b); user-scoped reads still need auth, so it surfaces "Your Twitch session expired · Sign in again" (`full-13`) |
 | Search — fresh sign-in | already fine | query returns results (`play-09`) |
-| Search — existing `full` install | **improved** | actionable message instead of silently-empty results (`full-14`) |
+| Public reads (Home top streams, Categories, Search) while unauthenticated | **improved** | Helix 401 on a public read now falls back to gql.twitch.tv; `full` returns real Search and Categories results with a dead token (`full-17`, `full-18`); §6a |
 | Login (device code + QR) | already fine | `play-05` shows code + `twitch.tv/activate`; sign-in completed on device → `play-07` |
-| signed-out browse | **deferred** | Twitch Helix 401s anonymous reads; `play-04`, `play-06`; see §6 |
+| signed-out browse | **improved** | anonymous public reads work via the GQL fallback (`full-17`, `full-18`); user-scoped reads still prompt sign-in (§6b) |
 | cold start | measured | §7 |
 | self-updater | **improved** | both flavors now point at the fork's own repo; an absent manifest fails quietly (`full-15`); exercising it end-to-end needs a published fork release (§8a) |
 | no-telemetry promise | already fine | no analytics/crash SDK in any `*.kts`; `core` untouched |
@@ -115,6 +115,8 @@ All files in `docs/tv-audit/evidence/`. PNGs are byte-exact (`adb exec-out`-safe
 | Live stream | `full-04-stream-live.png/.xml`, `full-05-stream-controls.png/.xml` | — |
 | Login (device code + QR) | — | `play-05-login.png/.xml` |
 | Settings ▸ Account & Updates (update check) | `full-15-settings-update-check.png/.xml` | — |
+| Search via GQL fallback (dead token) | `full-17-search-gql-fallback.png/.xml` | — |
+| Categories via GQL fallback (dead token) | `full-18-categories-gql-fallback.png/.xml` | — |
 | Cold-start A/B (raw) | `full-16-coldstart-ab.txt` | — |
 
 The player screenshots (`full-04`, `full-05`) carry the player evidence: the ExoPlayer surface and
@@ -123,33 +125,40 @@ design. Their content was read from the screenshots instead (see §7).
 
 ## 6. Deferred with reason
 
-### 6a. Signed-out browse — Twitch Helix now requires OAuth for public reads
+### 6a. Signed-out browse — fixed with a GQL fallback for public reads
 
-Reproduced directly against the live API from the host:
+**Problem.** Reproduced against the live API from the host:
 
 ```
 GET https://api.twitch.tv/helix/games/top?first=1   (fork client id)        -> 401 {"message":"OAuth token is missing"}
 GET https://api.twitch.tv/helix/games/top?first=1   (twitch web public id)  -> 401 {"message":"OAuth token is missing"}
 ```
 
-Helix now rejects **anonymous** requests for `/streams`, `/games/top`, `/search/channels`. PureTV
-only attaches `Authorization` when a viewer is signed in, so a **signed-out** viewer gets HTTP 401.
-On `play` (fresh, signed out) this is visible on Home (`play-01`), Following (`play-04`) and Search
-(`play-06`). This is **pre-existing** (the flavor split touched no networking/auth code) and external
-(a Twitch policy change). Landing a full fix needs one of:
+Helix now rejects **anonymous** requests for `/streams`, `/games/top` and `/search/channels`.
+PureTV only attaches `Authorization` when signed in, so a signed-out viewer — and any install whose
+access token has expired (§6b) — got 401s: an empty Search, an empty category grid, no top streams.
 
-1. **App access token** — mint a client-credentials token so anonymous reads succeed. Needs a real
-   Twitch `client_secret`, which this checkout does not have.
-2. **Migrate public reads to GQL** — the app's other Twitch calls already use `gql.twitch.tv` with
-   the web client id, which still works anonymously. Re-routing `/streams`, `/games/top` and
-   `/search/channels` is a `core` change shared by `app-android` and `app-windows` and needs
-   cross-platform validation.
+**Fix (landed, in `core`).** Public reads now fall back to `gql.twitch.tv` — the endpoint Twitch's
+own web client uses, which still answers with **no token** — when Helix answers 401.
+`TwitchGqlPublicReads` sends one-operation GQL documents and maps the response into the existing
+`StreamInfo` / `GameInfo` / `ChannelSearchResult` models; `TwitchApiClient.getStreams`,
+`getTopGames` and `searchChannels` catch a 401 and delegate to it (`if (e.statusCode != 401) throw e`).
+Helix stays the primary path, so signed-in behaviour is unchanged and `app-android` / `app-windows`
+keep their Helix path — they merely gain the same anonymous fallback.
 
-Landed mitigation this sweep: the TV app no longer leaks the raw exception or blames the connection
-— a 401 is mapped to an actionable message ("Twitch now requires sign-in to browse. Choose Sign in
-from the nav rail.") on Home and Browse (the category grid) via `ViewModels.friendlyLoadError`; the
-signed-out Home is captured in `play-01`. The signed-out Following/Search screens are covered by the
-same auth-vs-network distinction described in §6b.
+Query shapes were validated directly against `gql.twitch.tv` (anonymously) before implementation:
+`streams(first:)`, `games(first:)`, `users(logins:)`, `game(id:){streams(first:)}`, and
+`searchFor(userQuery:, platform:"web", target:{index: CHANNEL})`. Mapping is unit-tested
+(`TwitchGqlPublicReadsTest`, 7 cases, green).
+
+**Evidence on device.** The `full` install's access token is dead (§6b), so its public Helix reads
+401 and take the fallback: **Search now returns real results** (`full-17`) and **Categories renders
+real categories** (`full-18`), both empty before this change. Home's top streams render too.
+
+**Residual.** User-scoped reads (`/channels/followed`, VOD resume history) genuinely need a valid
+user token and cannot use an anonymous endpoint; those are handled by the actionable state in §6b.
+The earlier on-screen mitigation for 401s (`ViewModels.friendlyLoadError`, `TV_SESSION_EXPIRED_MESSAGE`)
+is kept for the network-only 401 case.
 
 ### 6b. User-scoped reads fail on the long-lived `full` install — root cause found, made actionable
 
@@ -267,11 +276,17 @@ reads "no manifest" as "nothing newer"); it is quiet, but it is not literally "v
 Exercising the updater **end to end** (real download + install) still requires a published fork
 release, which this sweep must not create. That is the one open item here.
 
-**(b) GQL migration for public reads** (see §6a) is a `core` change shared by three platforms and
-needs cross-platform validation; deferred.
+**(b) GQL migration for public reads — landed.** (see §6a) `TwitchGqlPublicReads` plus the
+`TwitchApiClient` 401 fallback, both in `core`, with a unit-tested mapping. Cross-platform check:
+`:core` (Android + desktop targets), `:app-tv` and `:app-windows` all compile and their tests pass;
+`:app-android` compiles (`assembleDebug`) and has no unit-test source. Caveat, pre-existing and not
+introduced here: on a JDK-21 host `:app-windows:compileKotlin` trips a JVM-target validation
+(`compileJava` 21 vs `compileKotlin` 17) — reproduced identically at `e716aa6`. With that single
+validation relaxed (`-Pkotlin.jvm.target.validation.mode=warning`) it compiles and its tests pass,
+which is how it was verified for this change.
 
-**(c) Evidence size.** `docs/tv-audit/evidence/` is ~6.8 MB of PNGs (25 files) plus ~0.3 MB of XML
-(24 files) and one raw benchmark text file. The PNGs are kept because the goal requires per-screen
+**(c) Evidence size.** `docs/tv-audit/evidence/` is ~8.2 MB of PNGs (27 files) plus ~0.3 MB of XML
+(26 files) and one raw benchmark text file. The PNGs are kept because the goal requires per-screen
 screenshots alongside the dumps and they are the primary human-verifiable artefact; XML dumps alone
-do not show focus/visual state. A ~7 MB checked-in evidence set is acceptable for a one-off audit.
+do not show focus/visual state. A ~8 MB checked-in evidence set is acceptable for a one-off audit.
 If that is unwanted, the PNGs are the part to drop.
