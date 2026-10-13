@@ -7,6 +7,7 @@ import com.puretv.twitch.core.adblock.AdBlockEngine
 import com.puretv.twitch.core.adblock.AdBlockStatus
 import com.puretv.twitch.core.api.DeviceAuth
 import com.puretv.twitch.core.api.DevicePollResult
+import com.puretv.twitch.core.api.HelixApiException
 import com.puretv.twitch.core.chat.TwitchChatClient
 import com.puretv.twitch.core.emotes.EmoteRepository
 import com.puretv.twitch.core.follows.FollowRow
@@ -93,6 +94,21 @@ internal fun clampVodPosition(positionMs: Long, durationSeconds: Long): Long {
     if (durationSeconds <= 0L) return safePosition
     val durationMs = if (durationSeconds > Long.MAX_VALUE / 1_000L) Long.MAX_VALUE else durationSeconds * 1_000L
     return minOf(safePosition, durationMs)
+}
+
+/**
+ * Maps a browse/load failure to a message a viewer can act on. Twitch Helix now
+ * requires an OAuth token even for public reads (/streams, /games/top,
+ * /search/channels), so a signed-out viewer hits HTTP 401 rather than an empty
+ * list. "Sign in" is the actionable thing to say; leaking "HTTP 401" or blaming
+ * the connection (when the network is fine) sends the viewer down the wrong path.
+ */
+internal fun friendlyLoadError(e: Throwable, fallback: String): String = when {
+    e is HelixApiException && e.statusCode == 401 ->
+        "Twitch now requires sign-in to browse. Choose Sign in from the nav rail."
+    e is HelixApiException && e.statusCode == 429 ->
+        "Twitch is rate-limiting this app. Try again in a moment."
+    else -> fallback
 }
 
 /**
@@ -247,11 +263,13 @@ class HomeViewModel(
             if (userRepository.followedChannels.value.map { it.broadcaster_id } == followedVodChannelIds) {
                 refreshLatestFollowedVods()
             }
-            val ok = loadTopStreamsResilient()
+            val failure = loadTopStreamsResilient()
             _state.update {
                 it.copy(
                     isLoading = false,
-                    error = if (!ok && it.topStreams.isEmpty()) "Couldn't load. Check your connection and try again." else null,
+                    error = if (failure != null && it.topStreams.isEmpty()) {
+                        friendlyLoadError(failure, "Couldn't load. Check your connection and try again.")
+                    } else null,
                 )
             }
         }
@@ -424,10 +442,12 @@ class HomeViewModel(
      * the common cause) refresh the token once and retry. On success the
      * write-through collector above updates the UI + cache.
      */
-    private suspend fun loadTopStreamsResilient(): Boolean {
-        if (runCatching { streamRepository.refreshTopStreams() }.isSuccess) return true
+    private suspend fun loadTopStreamsResilient(): Throwable? {
+        val first = runCatching { streamRepository.refreshTopStreams() }
+        if (first.isSuccess) return null
         runCatching { tokenRefresher.refreshIfPossible() }
-        return runCatching { streamRepository.refreshTopStreams() }.isSuccess
+        val second = runCatching { streamRepository.refreshTopStreams() }
+        return second.exceptionOrNull() ?: first.exceptionOrNull()
     }
 
     private companion object {
@@ -547,7 +567,7 @@ class BrowseViewModel(
                     _state.update {
                         it.copy(
                             isLoading = false,
-                            error = if (it.games.isEmpty()) (e.message ?: "Couldn't load categories.") else null,
+                            error = if (it.games.isEmpty()) friendlyLoadError(e, "Couldn't load categories.") else null,
                         )
                     }
                 }
