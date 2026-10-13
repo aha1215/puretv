@@ -38,6 +38,14 @@ class TwitchApiClient(
     private val httpClient: HttpClient,
     private val tokenProvider: () -> String?,
 ) {
+    /**
+     * Anonymous public-read fallback over gql.twitch.tv. Helix rejects anonymous
+     * /streams, /games/top and /search/channels with 401; GQL still answers.
+     * Reached only when a Helix read 401s, so the signed-in path is untouched.
+     * See [TwitchGqlPublicReads].
+     */
+    private val gqlPublic = TwitchGqlPublicReads(httpClient)
+
     private suspend fun authedClient() = httpClient.also { /* headers attached per-request below */ }
 
     private suspend inline fun <reified T> get(
@@ -53,16 +61,26 @@ class TwitchApiClient(
 
     /** GET /streams — by user login(s) and/or game id(s). */
     suspend fun getStreams(userLogins: List<String> = emptyList(), gameIds: List<String> = emptyList(), first: Int = 20): List<StreamInfo> {
-        val resp: HelixEnvelope<StreamInfo> = withRateLimitRetry {
-            authedClient().get("${TwitchConfig.API_BASE}/streams") {
-                header("Client-Id", TwitchConfig.CLIENT_ID)
-                tokenProvider()?.let { header("Authorization", "Bearer $it") }
-                userLogins.forEach { parameter("user_login", it) }
-                gameIds.forEach { parameter("game_id", it) }
-                parameter("first", first.toString())
-            }.body()
+        return try {
+            val resp: HelixEnvelope<StreamInfo> = withRateLimitRetry {
+                authedClient().get("${TwitchConfig.API_BASE}/streams") {
+                    header("Client-Id", TwitchConfig.CLIENT_ID)
+                    tokenProvider()?.let { header("Authorization", "Bearer $it") }
+                    userLogins.forEach { parameter("user_login", it) }
+                    gameIds.forEach { parameter("game_id", it) }
+                    parameter("first", first.toString())
+                }.body()
+            }
+            resp.data
+        } catch (e: HelixApiException) {
+            // Helix now 401s anonymous reads; GQL serves the same data without a token.
+            if (e.statusCode != 401) throw e
+            when {
+                userLogins.isNotEmpty() -> gqlPublic.streamsForLogins(userLogins)
+                gameIds.isNotEmpty() -> gameIds.flatMap { gqlPublic.streamsForGame(it, first) }
+                else -> gqlPublic.topStreams(first)
+            }
         }
-        return resp.data
     }
 
     /** Convenience: is a single channel currently live? Returns the StreamInfo if so. */
@@ -155,17 +173,29 @@ class TwitchApiClient(
 
     /** GET /games/top — top live categories. */
     suspend fun getTopGames(first: Int = 20): List<GameInfo> {
-        val resp: HelixEnvelope<GameInfo> = get("/games/top", mapOf("first" to first.toString()))
-        return resp.data
+        return try {
+            val resp: HelixEnvelope<GameInfo> = get("/games/top", mapOf("first" to first.toString()))
+            resp.data
+        } catch (e: HelixApiException) {
+            if (e.statusCode != 401) throw e
+            gqlPublic.topGames(first)
+        }
     }
 
     /** GET /search/channels — search by query string. */
     suspend fun searchChannels(query: String, liveOnly: Boolean = false): List<ChannelSearchResult> {
-        val resp: HelixEnvelope<ChannelSearchResult> = get(
-            "/search/channels",
-            mapOf("query" to query, "live_only" to liveOnly.toString()),
-        )
-        return resp.data
+        return try {
+            val resp: HelixEnvelope<ChannelSearchResult> = get(
+                "/search/channels",
+                mapOf("query" to query, "live_only" to liveOnly.toString()),
+            )
+            resp.data
+        } catch (e: HelixApiException) {
+            if (e.statusCode != 401) throw e
+            gqlPublic.searchChannels(query).let { results ->
+                if (liveOnly) results.filter { it.is_live } else results
+            }
+        }
     }
 
     /** GET /streams?user_login= — quick "is this channel live right now" check. */
