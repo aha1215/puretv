@@ -14,6 +14,23 @@ Kotlin Multiplatform:
 - `app-tv` shares `core` only. It has its own 10-foot Leanback and D-pad UI, and
   duplicates the player wiring because ExoPlayer cannot live in `core`.
 
+### TV product flavors
+
+`app-tv` ships two flavors of one app:
+
+- `full` — the sideload app (`com.puretv.twitch.tv`) with ad stripping enabled.
+- `play` — a Play-Store-compatible twin (`com.puretv.twitch.tv.play`) with ad
+  stripping compiled out (Play policy forbids ad blocking). It installs beside
+  `full` on the same device and shares every other feature.
+
+Ad stripping is gated by the per-flavor `BuildConfig.AD_STRIPPING_ENABLED`; `full`
+sets it true, `play` false as a constant so R8 removes the interceptor and the
+strip pipeline from the `play` dex. The in-app updater reads a per-flavor
+manifest (`tv-latest` for `full`, `tv-play-latest` for `play`).
+
+Flavor-aware tasks: `:app-tv:assembleFullRelease`, `:app-tv:assemblePlayRelease`,
+`:app-tv:bundlePlayRelease`.
+
 ## Running
 
 ```bash
@@ -65,7 +82,9 @@ There is no CI workflow watching `android-v*` or `tv-v*`. Cut these by hand.
 2. Build the signed release APK. Both are signed by the build now, so neither
    needs a manual signing pass.
 
-   `./gradlew :app-tv:assembleRelease` is wired to `keystore.properties`.
+   `./gradlew :app-tv:assembleFullRelease` builds the `full` sideload APK and
+   `./gradlew :app-tv:bundlePlayRelease` the `play` AAB (both wired to
+   `keystore.properties`).
 
    `./gradlew :app-android:assembleRelease` is wired to this machine's
    `~/.android/debug.keystore` (alias `androiddebugkey`, password `android`).
@@ -83,7 +102,9 @@ There is no CI workflow watching `android-v*` or `tv-v*`. Cut these by hand.
    ```
 
    must match the same command run against the currently published APK.
-   Android is `CN=Android Debug`; TV is `CN=PureTV for Twitch`.
+   Android is `CN=Android Debug`; upstream TV is `CN=PureTV for Twitch`. A fork
+   that signs with its own key will legitimately differ from upstream and can
+   only update installs made with that same fork key.
 
 4. Upload in this order. Create the versioned tag as a **pre-release**, then
    update the moving `android-latest` or `tv-latest` release: APK first, verify

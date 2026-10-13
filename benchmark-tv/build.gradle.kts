@@ -22,6 +22,9 @@ android {
     defaultConfig {
         minSdk = 26
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        // app-tv gained a "distribution" flavor dimension (full/play); the
+        // benchmark harness measures the `full` sideload app by default.
+        missingDimensionStrategy("distribution", "full")
     }
 
     compileOptions {

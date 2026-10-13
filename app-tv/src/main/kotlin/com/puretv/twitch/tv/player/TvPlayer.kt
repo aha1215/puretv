@@ -25,6 +25,7 @@ import com.puretv.twitch.core.adblock.PlaylistAction
 import com.puretv.twitch.core.adblock.PlaylistDetect
 import com.puretv.twitch.core.model.StreamQuality
 import com.puretv.twitch.core.stream.HlsMasterParser
+import com.puretv.twitch.tv.BuildConfig
 import com.puretv.twitch.tv.data.AppSettingsStore
 import com.puretv.twitch.tv.data.SmbRoutingDataSourceFactory
 import kotlinx.coroutines.runBlocking
@@ -62,7 +63,15 @@ class TvPlayer(
     private val settingsStore: AppSettingsStore,
 ) {
     private val okHttpClient = OkHttpClient.Builder()
-        .addInterceptor(TvAdBlockInterceptor(adBlockEngine, backupStreamResolver))
+        .apply {
+            // `play` compiles ad stripping out: AD_STRIPPING_ENABLED is a
+            // constant-false BuildConfig field, so R8 folds this branch away and
+            // removes TvAdBlockInterceptor (and its core ad-block call graph) from
+            // the play dex. `full` keeps the seamless backup-swap + strip pipeline.
+            if (BuildConfig.AD_STRIPPING_ENABLED) {
+                addInterceptor(TvAdBlockInterceptor(adBlockEngine, backupStreamResolver))
+            }
+        }
         .build()
 
     /**

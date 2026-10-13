@@ -35,6 +35,7 @@ import androidx.compose.ui.unit.sp
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import com.puretv.twitch.core.api.TwitchConfig
+import com.puretv.twitch.tv.BuildConfig
 import com.puretv.twitch.tv.ui.LoginViewModel
 import com.puretv.twitch.tv.ui.QrCode
 import com.puretv.twitch.tv.ui.components.ExpressiveIcons
@@ -119,8 +120,11 @@ fun TvLoginScreen(onLoggedIn: () -> Unit, onBack: () -> Unit, viewModel: LoginVi
                 // Short on purpose. This row is the one part of the screen the
                 // shrink-to-fit cannot rescue, since a pill is a fixed-height
                 // single line: keep it narrow enough to survive a doubled text
-                // size, and keep anything sign-in depends on out of here.
-                TvShieldPill(text = "Ad blocking always on")
+                // size, and keep anything sign-in depends on out of here. Only
+                // the `full` flavor strips ads, so only it may claim ad blocking.
+                if (BuildConfig.AD_STRIPPING_ENABLED) {
+                    TvShieldPill(text = "Ad blocking always on")
+                }
             }
 
             Spacer(Modifier.height(18.dp))

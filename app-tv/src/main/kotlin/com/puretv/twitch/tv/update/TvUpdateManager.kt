@@ -9,6 +9,7 @@ import android.os.Build
 import android.provider.Settings
 import android.util.Log
 import com.puretv.twitch.core.update.UpdateGate
+import com.puretv.twitch.tv.BuildConfig
 import com.puretv.twitch.core.update.updateGate
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -324,7 +325,7 @@ class TvUpdateManager(private val context: Context) {
 
     private fun fetchLatest(): TvUpdateInfo? {
         val request = Request.Builder()
-            .url(VERSION_MANIFEST_URL)
+            .url(BuildConfig.UPDATE_MANIFEST_URL)
             .header("User-Agent", "PureTV-TV-Updater")
             .header("Accept", "application/json")
             .build()
@@ -410,8 +411,6 @@ class TvUpdateManager(private val context: Context) {
 
     private companion object {
         const val TAG = "TvUpdateManager"
-        const val VERSION_MANIFEST_URL =
-            "https://github.com/dhawal-ss/puretv/releases/download/tv-latest/tv-version.json"
     }
 }
 

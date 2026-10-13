@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- `play` is the Play-Store-compatible flavor with ad stripping compiled out;
+         a distinct label keeps it from being confused with `full` (sideload) when
+         both are installed side-by-side on the same TV. -->
+    <string name="app_name">PureTV for Twitch (Play)</string>
+</resources>

@@ -44,6 +44,7 @@ import androidx.tv.material3.Text
 import com.puretv.twitch.core.adblock.AdBlockStrategy
 import com.puretv.twitch.core.model.StreamQuality
 import com.puretv.twitch.core.repository.VodRepository
+import com.puretv.twitch.tv.BuildConfig
 import com.puretv.twitch.tv.data.AppSettingsStore
 import com.puretv.twitch.tv.data.BrowserVodSyncServer
 import com.puretv.twitch.tv.data.SmbShareSettings
@@ -228,13 +229,15 @@ fun TvSettingsScreen(onBack: () -> Unit, viewModel: SettingsViewModel = koinView
                                 smbMessage?.let { Text(it, color = c.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium) }
                             }
                         }
-                        TvPanel(padding = 24.dp) {
-                            AdBlockSection(
-                                enabled = state.settings.adBlockEnabled,
-                                onEnabledChange = viewModel::setAdBlockEnabled,
-                                strategyKey = state.settings.adBlockStrategy,
-                                onStrategySelect = viewModel::setAdBlockStrategy,
-                            )
+                        if (BuildConfig.AD_STRIPPING_ENABLED) {
+                            TvPanel(padding = 24.dp) {
+                                AdBlockSection(
+                                    enabled = state.settings.adBlockEnabled,
+                                    onEnabledChange = viewModel::setAdBlockEnabled,
+                                    strategyKey = state.settings.adBlockStrategy,
+                                    onStrategySelect = viewModel::setAdBlockStrategy,
+                                )
+                            }
                         }
                         TvPanel(padding = 24.dp) {
                             TwitchVodResumeSection(
@@ -329,7 +332,14 @@ private enum class TvSettingsCategory(
     APPEARANCE("Appearance", "Choose the app palette.", ExpressiveIcons.Settings),
     PLAYBACK("Playback", "Stream quality and VOD seeking.", ExpressiveIcons.Play),
     CHAT("Chat", "Overlay, translation, and message style.", ExpressiveIcons.Chat),
-    NETWORK("Network & Ads", "Ad blocking and Twitch VOD resume.", ExpressiveIcons.Shield),
+    // `play` compiles ad stripping out, so its Settings index must not advertise
+    // it either. BuildConfig.AD_STRIPPING_ENABLED is a per-flavor constant, so
+    // R8 folds each flavor to a single literal.
+    NETWORK(
+        if (BuildConfig.AD_STRIPPING_ENABLED) "Network & Ads" else "Network",
+        if (BuildConfig.AD_STRIPPING_ENABLED) "Ad blocking and Twitch VOD resume." else "Twitch VOD resume.",
+        ExpressiveIcons.Shield,
+    ),
     ACCOUNT("Account & Updates", "Twitch account and app version.", ExpressiveIcons.Account),
 }
 

@@ -40,7 +40,6 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.puretv.twitch.tv"
         minSdk = 26
         targetSdk = 35
         // versionCode is the monotonic value the in-app updater compares against
@@ -49,6 +48,37 @@ android {
         versionCode = 16
         versionName = "1.3.2"
         ndk { abiFilters += listOf("armeabi-v7a", "arm64-v8a") }
+    }
+
+    // `full` vs `play` product flavors (Section 12.2):
+    //   * full — today's published sideload app, applicationId com.puretv.twitch.tv,
+    //     ad stripping enabled.
+    //   * play — a Play-Store-compatible twin with its own applicationId so both
+    //     install side-by-side on one TV, and ad stripping compiled out (Play
+    //     policy forbids ad blocking). Every other feature is shared.
+    flavorDimensions += "distribution"
+
+    productFlavors {
+        create("full") {
+            dimension = "distribution"
+            applicationId = "com.puretv.twitch.tv"
+            buildConfigField("boolean", "AD_STRIPPING_ENABLED", "true")
+            buildConfigField(
+                "String",
+                "UPDATE_MANIFEST_URL",
+                "\"https://github.com/dhawal-ss/puretv/releases/download/tv-latest/tv-version.json\"",
+            )
+        }
+        create("play") {
+            dimension = "distribution"
+            applicationId = "com.puretv.twitch.tv.play"
+            buildConfigField("boolean", "AD_STRIPPING_ENABLED", "false")
+            buildConfigField(
+                "String",
+                "UPDATE_MANIFEST_URL",
+                "\"https://github.com/dhawal-ss/puretv/releases/download/tv-play-latest/tv-play-version.json\"",
+            )
+        }
     }
 
     signingConfigs {
@@ -110,7 +140,12 @@ android {
         jvmTarget = "11"
     }
 
-    buildFeatures { compose = true }
+    buildFeatures {
+        compose = true
+        // BuildConfig carries the per-flavor AD_STRIPPING_ENABLED and
+        // UPDATE_MANIFEST_URL constants that gate ad stripping and the updater.
+        buildConfig = true
+    }
 
     lint {
         // Work around a lint tooling crash (not a code defect): under this
