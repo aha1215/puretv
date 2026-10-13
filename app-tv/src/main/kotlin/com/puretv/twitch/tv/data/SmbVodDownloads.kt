@@ -147,6 +147,7 @@ private data class TwitchDownloaderEmoticon(
 private data class FoundTwitchDownloaderArchive(
     val chatPath: Path,
     val mediaPath: Path?,
+    val hlsManifestName: String? = null,
     val archive: TwitchDownloaderChatArchive? = null,
     val videoStartSeconds: Int = 0,
     val videoEndSeconds: Int = 0,
@@ -195,6 +196,9 @@ private fun findTwitchDownloaderArchive(
         val found = FoundTwitchDownloaderArchive(
             chatPath = chatPath,
             mediaPath = children.firstOrNull { it.fileName.toString().endsWith(".mp4", ignoreCase = true) },
+            hlsManifestName = "puretv-hls/index.m3u8".takeIf {
+                files.exists(directory.resolve("puretv-hls").resolve("index.m3u8"))
+            },
             archive = archive,
             videoStartSeconds = twitchDownloaderVideoField(header, "start"),
             videoEndSeconds = twitchDownloaderVideoField(header, "end"),
@@ -580,33 +584,83 @@ class SmbVodDownloads(
             if (!files.exists(root)) return@withContext emptyList()
             files.list(root).mapNotNull { path ->
                 runCatching {
-                    val metadata = JSON.decodeFromString<SavedVod>(files.readText(path.resolve("metadata.json")))
-                    val archiveStart = findTwitchDownloaderArchive(
-                        files = files,
-                        target = target,
-                        parent = root,
-                        root = path,
-                        vodId = metadata.id,
-                        channelLogin = metadata.channelLogin,
-                    )?.videoStartSeconds?.toLong() ?: 0L
-                    metadata.copy(sourceStartSeconds = maxOf(metadata.sourceStartSeconds, archiveStart))
+                    JSON.decodeFromString<SavedVod>(files.readText(path.resolve("metadata.json")))
                 }.getOrNull()
             }.sortedByDescending { it.savedAtMs }
         }
     }
 
-    suspend fun savedVod(id: String): SavedVod? = savedVods().firstOrNull { it.id == id }
+    /** Read only the requested bundle manifest; playback must not scan the whole share. */
+    suspend fun savedVod(id: String): SavedVod? = withContext(Dispatchers.IO) {
+        val target = connectionSettings()
+        SmbFiles(target).use { files ->
+            findPlayableBundle(files, target, id)?.metadata
+        }
+    }
 
     suspend fun mediaUri(id: String): String = withContext(Dispatchers.IO) {
         val target = connectionSettings()
         SmbFiles(target).use { files ->
-            val parent = smbFolderPath(target.settings.folder).resolve("puretv-vods")
-            val root = parent.resolve(smbFolderPath(id))
-            val path = root.resolve("index.m3u8")
-            val uri = "smb://${target.settings.host}/${target.settings.share}/${path.toString().replace('\\', '/').trim('/')}"
-            uri
+            val bundle = findPlayableBundle(files, target, id)
+                ?: throw IllegalStateException("Saved VOD playlist is missing from SMB. Save this VOD to SMB again.")
+            val directoryName = bundle.directory.fileName.toString()
+            Log.i("PureTV-SMB", "saved VOD $id uses ${directoryName}/${bundle.manifestName}")
+            buildSmbVodUri(target.settings, id, bundle.manifestName, directoryName)
         }
     }
+
+    /** A previous complete bundle may still be in the atomic-replacement backup directory. */
+    private fun findPlayableBundle(files: SmbFiles, target: ShareConnection, id: String): PlayableSavedVod? {
+        val parent = smbFolderPath(target.settings.folder).resolve("puretv-vods")
+        val idPath = smbFolderPath(id)
+        val idName = idPath.fileName?.toString() ?: return null
+        val candidates = listOf(
+            idPath,
+            idPath.resolveSibling(".$idName.backup"),
+            idPath.resolveSibling(".$idName.partial"),
+        )
+        var foundMetadata = false
+        var archiveMetadata: SavedVod? = null
+        for (directory in candidates) {
+            val root = parent.resolve(directory)
+            val metadata = runCatching {
+                JSON.decodeFromString<SavedVod>(files.readText(root.resolve("metadata.json")))
+            }.getOrNull() ?: continue
+            foundMetadata = true
+            if (archiveMetadata == null) archiveMetadata = metadata
+            val manifestName = runCatching { smbFolderPath(metadata.manifestName) }.getOrNull() ?: continue
+            if (files.exists(root.resolve(manifestName))) {
+                return PlayableSavedVod(metadata, directory, manifestName.toString().replace('\\', '/'))
+            }
+        }
+        val metadata = archiveMetadata
+        if (metadata != null) {
+            val archive = findTwitchDownloaderArchive(
+                files = files,
+                target = target,
+                parent = parent,
+                root = parent.resolve(idPath),
+                vodId = id,
+                channelLogin = metadata.channelLogin,
+            )
+            val hlsManifestName = archive?.hlsManifestName
+            if (archive != null && hlsManifestName != null) {
+                val archiveDirectory = archive.chatPath.parent
+                Log.i("PureTV-SMB", "saved VOD $id found converted HLS at ${archiveDirectory.fileName}/$hlsManifestName")
+                return PlayableSavedVod(metadata, archiveDirectory.fileName.toString().let(::smbFolderPath), hlsManifestName)
+            }
+        }
+        if (foundMetadata) {
+            Log.w("PureTV-SMB", "saved VOD $id has no playable playlist in its bundle, backup, partial folder, or converted HLS folder")
+        }
+        return null
+    }
+
+    private data class PlayableSavedVod(
+        val metadata: SavedVod,
+        val directory: Path,
+        val manifestName: String,
+    )
 
     suspend fun chat(id: String): List<SavedChatMessage> {
         val target = connectionSettings()
@@ -778,7 +832,7 @@ class SmbVodDownloads(
             "SMB share name is invalid"
         }
         smbFolderPath(target.folder)
-        return ShareConnection(target, settings.smbPassword())
+        return ShareConnection(target, settings.smbPassword()).also(SmbPlaybackSettings::update)
     }
 
     private suspend fun fetchAllComments(vodId: String, onProgress: (Progress) -> Unit) = withContext(Dispatchers.IO) {
@@ -910,6 +964,28 @@ internal fun rewriteHlsPlaylist(content: String, playlistUrl: String, resources:
 private fun resolvePlaylistResource(base: String, reference: String): String = URI(base).resolve(reference).toString()
 
 private data class ShareConnection(val settings: SmbShareSettings, val password: String)
+private object SmbPlaybackSettings {
+    @Volatile private var snapshot: ShareConnection? = null
+    fun update(connection: ShareConnection) { snapshot = connection }
+    fun current(): ShareConnection? = snapshot
+}
+
+internal fun buildSmbVodUri(
+    settings: SmbShareSettings,
+    id: String,
+    manifestName: String = "index.m3u8",
+    bundleDirectoryName: String = id,
+): String {
+    val path = smbFolderPath(settings.folder).resolve("puretv-vods")
+        .resolve(smbFolderPath(bundleDirectoryName)).resolve(smbFolderPath(manifestName))
+    // Build the URL from a path component so spaces and reserved characters in
+    // the configured share/folder don't become URI query or fragment syntax.
+    val encodedPath = "/${settings.share}/${path.toString().replace('\\', '/').trim('/')}"
+    return URI("smb", settings.host, encodedPath, null, null).toASCIIString()
+}
+
+internal fun isSmbResourceScheme(scheme: String?): Boolean = scheme.equals("smb", ignoreCase = true)
+
 private data class SmbConnectionKey(val host: String, val share: String, val username: String, val password: String)
 
 /** Share SMB connections while a download and its HLS reads overlap. */
@@ -1159,7 +1235,7 @@ private fun configuredSmbClient(): SMBClient = SMBClient(
 /** Routes smb:// HLS resources to the SMB share and all other schemes to Media3's default source. */
 class SmbRoutingDataSourceFactory(
     private val fallback: DataSource.Factory,
-    private val settings: AppSettingsStore,
+    @Suppress("UNUSED_PARAMETER") settings: AppSettingsStore,
 ) : DataSource.Factory {
     override fun createDataSource(): DataSource = object : DataSource {
         private var active: DataSource? = null
@@ -1172,7 +1248,7 @@ class SmbRoutingDataSourceFactory(
         @Synchronized
         override fun open(dataSpec: DataSpec): Long {
             val uri = dataSpec.uri
-            val delegate = if (uri.scheme.equals("smb", ignoreCase = true)) SmbReadDataSource(settings) else fallback.createDataSource()
+            val delegate = if (isSmbResourceScheme(uri.scheme)) SmbReadDataSource() else fallback.createDataSource()
             active = delegate
             listeners.forEach(delegate::addTransferListener)
             return delegate.open(dataSpec)
@@ -1188,31 +1264,65 @@ class SmbRoutingDataSourceFactory(
     }
 }
 
-private class SmbReadDataSource(private val settings: AppSettingsStore) : BaseDataSource(/* isNetwork = */ true) {
+internal class SmbReadAheadBuffer(private val bytes: ByteArray) {
+    private var remotePosition = 0L
+    private var bufferedBytes = 0
+    private var bufferOffset = 0
+
+    fun seek(position: Long) {
+        remotePosition = position.coerceAtLeast(0L)
+        bufferedBytes = 0
+        bufferOffset = 0
+    }
+
+    fun read(
+        output: ByteArray,
+        outputOffset: Int,
+        length: Int,
+        maxBytesRemaining: Int,
+        remoteRead: (Long, ByteArray, Int) -> Int,
+        onRemoteRead: (Int) -> Unit = {},
+    ): Int {
+        if (length == 0) return 0
+        if (maxBytesRemaining <= 0) return C.RESULT_END_OF_INPUT
+        if (bufferOffset >= bufferedBytes) {
+            val count = remoteRead(remotePosition, bytes, minOf(bytes.size, maxBytesRemaining))
+            if (count <= 0) return C.RESULT_END_OF_INPUT
+            remotePosition += count
+            bufferedBytes = count
+            bufferOffset = 0
+            onRemoteRead(count)
+        }
+        val count = minOf(length, bufferedBytes - bufferOffset, maxBytesRemaining)
+        bytes.copyInto(output, outputOffset, bufferOffset, bufferOffset + count)
+        bufferOffset += count
+        return count
+    }
+}
+
+private class SmbReadDataSource : BaseDataSource(/* isNetwork = */ true) {
     /**
      * Media3 commonly asks a DataSource for tens of KiB at a time. On SMB that
      * turns into one synchronous network round trip per read, which can starve
      * playback on a TV over Wi-Fi. Read ahead in larger blocks and serve those
      * smaller player reads from memory.
      */
-    private val readAheadBuffer = ByteArray(SMB_READ_AHEAD_BYTES)
+    private val readAheadBuffer = SmbReadAheadBuffer(ByteArray(SMB_READ_AHEAD_BYTES))
     private var lease: SmbSharePool.Lease? = null
     private var file: SmbFile? = null
     private var currentUri: Uri? = null
     private var remaining = C.LENGTH_UNSET.toLong()
-    private var remotePosition = 0L
-    private var bufferedBytes = 0
-    private var bufferOffset = 0
     private var transferWasStarted = false
 
     @Synchronized
     override fun open(dataSpec: DataSpec): Long {
         transferInitializing(dataSpec)
+        val openedAtNanos = System.nanoTime()
         try {
-            val cfg = kotlinx.coroutines.runBlocking { settings.smbShareSettings.first() }
-            val password = kotlinx.coroutines.runBlocking { settings.smbPassword() }
+            val connection = checkNotNull(SmbPlaybackSettings.current()) { "SMB playback settings are unavailable" }
+            val cfg = connection.settings
             val path = dataSpec.uri.path.orEmpty().removePrefix("/${cfg.share}/")
-            val acquired = SmbSharePool.acquire(ShareConnection(cfg, password))
+            val acquired = SmbSharePool.acquire(connection)
             lease = acquired
             val target = acquired.connection.share.openFile(
                 path.trim('/'),
@@ -1226,15 +1336,18 @@ private class SmbReadDataSource(private val settings: AppSettingsStore) : BaseDa
             // SMBJ exposes positional reads. Avoid InputStream.skip(), which may
             // emulate seeking by reading and discarding gigabytes when resuming a
             // large MP4 from an offset deep into a long VOD.
-            remotePosition = dataSpec.position
-            bufferedBytes = 0
-            bufferOffset = 0
+            readAheadBuffer.seek(dataSpec.position)
             currentUri = dataSpec.uri
             remaining = if (dataSpec.length == C.LENGTH_UNSET.toLong()) C.LENGTH_UNSET.toLong() else dataSpec.length
             transferStarted(dataSpec)
             transferWasStarted = true
+            android.util.Log.d("PureTV-SMB", "resource open ${System.nanoTime() - openedAtNanos}ns offset=${dataSpec.position}")
             return remaining
         } catch (error: Throwable) {
+            android.util.Log.w(
+                "PureTV-SMB",
+                "resource open failed after ${System.nanoTime() - openedAtNanos}ns type=${error.javaClass.simpleName}",
+            )
             close()
             throw error
         }
@@ -1244,21 +1357,25 @@ private class SmbReadDataSource(private val settings: AppSettingsStore) : BaseDa
     override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
         if (length == 0) return 0
         if (remaining == 0L) return C.RESULT_END_OF_INPUT
-        if (bufferOffset >= bufferedBytes) {
-            val request = if (remaining == C.LENGTH_UNSET.toLong()) readAheadBuffer.size
-                else minOf(readAheadBuffer.size.toLong(), remaining).toInt()
-            val count = file?.read(readAheadBuffer, remotePosition, 0, request) ?: C.RESULT_END_OF_INPUT
-            if (count <= 0) return C.RESULT_END_OF_INPUT
-            remotePosition += count
-            bufferedBytes = count
-            bufferOffset = 0
-            bytesTransferred(count)
-        }
-        val available = bufferedBytes - bufferOffset
-        val count = if (remaining == C.LENGTH_UNSET.toLong()) minOf(length, available)
-            else minOf(length.toLong(), available.toLong(), remaining).toInt()
-        readAheadBuffer.copyInto(buffer, offset, bufferOffset, bufferOffset + count)
-        bufferOffset += count
+        val maxRemaining = if (remaining == C.LENGTH_UNSET.toLong()) Int.MAX_VALUE
+            else minOf(remaining, Int.MAX_VALUE.toLong()).toInt()
+        val count = readAheadBuffer.read(
+            output = buffer,
+            outputOffset = offset,
+            length = length,
+            maxBytesRemaining = maxRemaining,
+            remoteRead = { position, destination, request ->
+                val readStartedNanos = System.nanoTime()
+                val remoteCount = file?.read(destination, position, 0, request) ?: C.RESULT_END_OF_INPUT
+                android.util.Log.d(
+                    "PureTV-SMB",
+                    "remote read ${System.nanoTime() - readStartedNanos}ns bytes=${remoteCount.coerceAtLeast(0)} offset=$position",
+                )
+                remoteCount
+            },
+            onRemoteRead = { bytesTransferred(it) },
+        )
+        if (count == C.RESULT_END_OF_INPUT) return count
         if (remaining != C.LENGTH_UNSET.toLong()) remaining -= count.toLong()
         return count
     }
@@ -1270,8 +1387,7 @@ private class SmbReadDataSource(private val settings: AppSettingsStore) : BaseDa
         currentUri = null
         runCatching { file?.close() }
         file = null
-        bufferedBytes = 0
-        bufferOffset = 0
+        readAheadBuffer.seek(0L)
         lease?.close()
         lease = null
         if (transferWasStarted) {

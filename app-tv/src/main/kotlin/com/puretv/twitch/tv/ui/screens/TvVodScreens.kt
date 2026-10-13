@@ -362,7 +362,9 @@ fun TvVodPlayerScreen(channelLogin: String, vodId: String, title: String, thumbn
     }
     LaunchedEffect(pendingRelativeSeekMs) {
         val target = pendingRelativeSeekMs ?: return@LaunchedEffect
-        kotlinx.coroutines.delay(180)
+        // Coalesce the remote's key-repeat stream into one real seek after the
+        // user pauses. Every seek reopens HLS resources over SMB.
+        kotlinx.coroutines.delay(350)
         if (pendingRelativeSeekMs == target) {
             viewModel.seekTo(target)
             pendingRelativeSeekMs = null
@@ -371,7 +373,9 @@ fun TvVodPlayerScreen(channelLogin: String, vodId: String, title: String, thumbn
     LaunchedEffect(seekingFraction, playbackDuration) {
         val targetFraction = seekingFraction ?: return@LaunchedEffect
         if (playbackDuration <= 0L) return@LaunchedEffect
-        kotlinx.coroutines.delay(200)
+        // Keep DPAD scrubbing responsive while avoiding repeated SMB segment
+        // opens for every key-repeat event.
+        kotlinx.coroutines.delay(400)
         if (seekingFraction == targetFraction) {
             viewModel.seekTo((playbackDuration * targetFraction).toLong())
             seekingFraction = null

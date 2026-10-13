@@ -170,9 +170,11 @@ class TvVodPlayerViewModel(
     private var lastRemotePositionSeconds = -1L
     private var lastRemotePositionAttemptMs = 0L
     private var positionSyncJob: kotlinx.coroutines.Job? = null
+    private var savedChatSeekJob: Job? = null
     private var savedChatLoadJob: Job? = null
     @Volatile private var savedChat: List<SavedChatMessage>? = null
     @Volatile private var isSavedBundle = false
+    @Volatile private var playbackLoadSucceeded = false
 
     init {
         load()
@@ -226,7 +228,13 @@ class TvVodPlayerViewModel(
                     // VOD seek cannot crash the main playback coroutine with CME.
                     translationRequests.values.toList().forEach { it.cancel() }
                     translationRequests.clear()
-                    if (isSavedBundle) loadSavedChatInBackground(second)
+                    if (isSavedBundle) {
+                        savedChatSeekJob?.cancel()
+                        savedChatSeekJob = viewModelScope.launch {
+                            delay(SAVED_BUNDLE_SEEK_DEBOUNCE_MS)
+                            loadSavedChatInBackground(player.exoPlayer.currentPosition.coerceAtLeast(0L) / 1_000L)
+                        }
+                    }
                 }
                 lastSecond = second
                 if (second > 0L && second % 5L == 0L && second != lastPersistedSecond) {
@@ -251,6 +259,8 @@ class TvVodPlayerViewModel(
     }
 
     fun load() = viewModelScope.launch {
+        playbackLoadSucceeded = false
+        player.beginVodSelectionTiming()
         _state.value = _state.value.copy(loading = true, error = null)
         runCatching {
             // Refresh an aged device-flow token before looking up Twitch's
@@ -258,7 +268,6 @@ class TvVodPlayerViewModel(
             // keeps resume history and subscriber access working after a long
             // app session; fetchVodToken also has an anonymous fallback for
             // public VODs if the saved session can no longer be refreshed.
-            if (!preferSavedBundle) runCatching { tokenRefresher.refreshIfPossible() }
             // If this VOD has already been saved, prefer its SMB copy even when
             // entered from the ordinary Twitch VOD list. This also keeps deleted
             // Twitch VODs playable from their existing local copy.
@@ -267,13 +276,15 @@ class TvVodPlayerViewModel(
                 val savedPosition = settingsStore.vodPlaybackPosition(vodId)
                 LoadedVod(
                     url = smbDownloads.mediaUri(vodId),
-                    subtitleUri = runCatching { smbDownloads.subtitleUri(vodId) }.getOrNull()
-                        ?: settingsStore.vodSubtitleUri(vodId)?.let(android.net.Uri::parse),
+                    // Subtitle/archive scans are optional and can be very slow on SMB.
+                    // Start the known bundle manifest first, then discover subtitles.
+                    subtitleUri = null,
                     positionMs = clampVodPosition(savedPosition, saved?.durationSeconds ?: durationSeconds),
                     subtitleTrack = TvPlayer.AUTO_SUBTITLE_TRACK,
                     savedBundle = true,
                 )
             } else {
+            runCatching { tokenRefresher.refreshIfPossible() }
             val settings = settingsStore.flow.first()
             val oauthToken = settings.accessToken.takeIf { it.isNotBlank() }
             val master = vodRepository.resolvePlayableVod(vodId, oauthToken)
@@ -292,6 +303,7 @@ class TvVodPlayerViewModel(
             LoadedVod(url, subtitle, position, subtitleTrack)
             }
         }.onSuccess { loaded ->
+            playbackLoadSucceeded = true
             savedChat = loaded.savedChat
             isSavedBundle = loaded.savedBundle || loaded.savedChat != null
             player.playVod(loaded.url, loaded.subtitleUri, loaded.positionMs)
@@ -319,7 +331,10 @@ class TvVodPlayerViewModel(
                 subtitleTrackPreference = loaded.subtitleTrack,
                 savedBundle = loaded.savedBundle,
             )
-            if (loaded.savedBundle) loadSavedChatInBackground()
+            if (loaded.savedBundle) {
+                loadSavedChatInBackground(loaded.positionMs / 1_000L)
+                loadSavedBundleSubtitleInBackground()
+            }
         }.onFailure { e ->
             _state.value = _state.value.copy(loading = false, error = e.message ?: "Couldn't load this video")
         }
@@ -376,8 +391,11 @@ class TvVodPlayerViewModel(
 
     /** Switch this player to its SMB copy without leaving the player route. */
     fun playSavedBundle() = viewModelScope.launch {
+        playbackLoadSucceeded = false
+        player.beginVodSelectionTiming()
         _state.value = _state.value.copy(loading = true, error = null)
         runCatching { smbDownloads.mediaUri(vodId) }.onSuccess { url ->
+            playbackLoadSucceeded = true
             val positionMs = clampVodPosition(settingsStore.vodPlaybackPosition(vodId), durationSeconds)
             savedChat = null
             isSavedBundle = true
@@ -392,11 +410,7 @@ class TvVodPlayerViewModel(
             )
             loadSavedChatInBackground(positionMs / 1_000L)
             // Archive scanning and subtitle discovery are optional and must not gate playback.
-            viewModelScope.launch {
-                val subtitle = runCatching { smbDownloads.subtitleUri(vodId) }.getOrNull()
-                    ?: settingsStore.vodSubtitleUri(vodId)?.let(android.net.Uri::parse)
-                if (subtitle != null) runCatching { player.setExternalSubtitle(subtitle) }
-            }
+            loadSavedBundleSubtitleInBackground()
         }.onFailure { error ->
             _state.value = _state.value.copy(
                 loading = false,
@@ -420,6 +434,14 @@ class TvVodPlayerViewModel(
             savedChat = messages
             publishChat(player.exoPlayer.currentPosition.coerceAtLeast(0L) / 1_000L)
             _state.value = _state.value.copy(savedChatLoading = false)
+        }
+    }
+
+    private fun loadSavedBundleSubtitleInBackground() {
+        viewModelScope.launch {
+            val preferred = settingsStore.vodSubtitleUri(vodId)?.let(android.net.Uri::parse)
+            val subtitle = preferred ?: runCatching { smbDownloads.subtitleUri(vodId) }.getOrNull()
+            if (subtitle != null) runCatching { player.setExternalSubtitle(subtitle) }
         }
     }
 
@@ -471,21 +493,29 @@ class TvVodPlayerViewModel(
     }
 
     fun savePlaybackPosition() {
+        if (!playbackLoadSucceeded) return
         viewModelScope.launch {
             val position = player.exoPlayer.currentPosition.coerceAtLeast(0L)
-            settingsStore.saveVodPlaybackPosition(vodId, position)
-            syncTwitchPlaybackPosition(position, force = true)
+            persistVodPosition(
+                position,
+                isSavedBundle,
+                persistLocally = { settingsStore.saveVodPlaybackPosition(vodId, it) },
+                syncTwitch = { syncTwitchPlaybackPosition(it, force = true) },
+            )
         }
     }
 
     private fun scheduleTwitchPositionSync(debounce: Boolean, force: Boolean) {
-        if (!force && positionSyncJob?.isActive == true) return
         positionSyncJob?.cancel()
         positionSyncJob = viewModelScope.launch {
             if (debounce) delay(TWITCH_POSITION_SEEK_DEBOUNCE_MS)
             val position = player.exoPlayer.currentPosition.coerceAtLeast(0L)
-            settingsStore.saveVodPlaybackPosition(vodId, position)
-            syncTwitchPlaybackPosition(position, force)
+            persistVodPosition(
+                position,
+                isSavedBundle,
+                persistLocally = { settingsStore.saveVodPlaybackPosition(vodId, it) },
+                syncTwitch = { syncTwitchPlaybackPosition(it, force) },
+            )
         }
     }
 
@@ -636,10 +666,22 @@ class TvVodPlayerViewModel(
     private companion object {
         const val TWITCH_RESUME_LOOKUP_TIMEOUT_MS = 4_000L
         const val TWITCH_POSITION_SYNC_INTERVAL_MS = 15_000L
-        const val TWITCH_POSITION_SEEK_DEBOUNCE_MS = 1_800L
+        const val TWITCH_POSITION_SEEK_DEBOUNCE_MS = 450L
+        const val SAVED_BUNDLE_SEEK_DEBOUNCE_MS = 450L
         const val SEEK_JUMP_THRESHOLD_SECONDS = 10L
         const val MAX_CACHED_CHAT_TRANSLATIONS = 500
     }
+}
+
+internal suspend fun persistVodPosition(
+    positionMs: Long,
+    isSavedBundle: Boolean,
+    persistLocally: suspend (Long) -> Unit,
+    syncTwitch: suspend (Long) -> Unit,
+) {
+    val position = positionMs.coerceAtLeast(0L)
+    persistLocally(position)
+    if (!isSavedBundle) syncTwitch(position)
 }
 
 /** Restore Twitch-native emote ranges retained by the downloader for offline chat. */

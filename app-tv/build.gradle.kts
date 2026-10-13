@@ -19,6 +19,13 @@ val keystoreProps = Properties().apply {
     if (keystorePropsFile.exists()) FileInputStream(keystorePropsFile).use { load(it) }
 }
 val hasReleaseSigning = keystorePropsFile.exists()
+// A benchmark app normally gets its own package and storage. For a real-device
+// SMB run, opt into the installed app's package so its existing (private)
+// DataStore settings remain available across the signed in-place update.
+val benchmarkAgainstInstalledApp =
+    providers.gradleProperty("benchmarkAgainstInstalledApp").orNull.toBoolean()
+val benchmarkSnapshotHelper =
+    providers.gradleProperty("benchmarkSnapshotHelper").orNull.toBoolean()
 
 /**
  * SECTION 12.2 — Android TV build config. Same toolchain/minSdk as the
@@ -69,12 +76,24 @@ android {
         }
         create("benchmark") {
             initWith(getByName("release"))
-            // Keep the target package distinct from the benchmark test APK package.
-            applicationIdSuffix = ".perf"
+            // Keep the default target isolated. Real-device runs explicitly opt
+            // into the installed package and use the existing release key, which
+            // lets PackageManager update the APK without clearing app data.
+            applicationIdSuffix = if (benchmarkAgainstInstalledApp) "" else ".perf"
             versionNameSuffix = "-benchmark"
             isMinifyEnabled = false
             isShrinkResources = false
-            signingConfig = signingConfigs.getByName("debug")
+            // The signed helper can snapshot private DataStore settings. The
+            // measured target stays non-debuggable for representative timings.
+            isDebuggable = benchmarkAgainstInstalledApp && benchmarkSnapshotHelper
+            signingConfig = if (benchmarkAgainstInstalledApp) {
+                check(hasReleaseSigning) {
+                    "benchmarkAgainstInstalledApp requires the local release signing key to preserve app data"
+                }
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
             matchingFallbacks += listOf("release")
         }
     }

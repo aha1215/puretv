@@ -74,6 +74,57 @@ class TvPlayer(
      */
     private var _exoPlayer: ExoPlayer? = null
     private var externalSubtitleListener: Player.Listener? = null
+    @Volatile private var vodSelectionStartedNanos = 0L
+    @Volatile private var seekStartedNanos = 0L
+    @Volatile private var timingTraceCookie = 0
+    private val vodTimingListener = object : Player.Listener {
+        override fun onRenderedFirstFrame() {
+            val started = vodSelectionStartedNanos
+            if (started != 0L) {
+                android.util.Log.i("PureTV-Playback", "VOD first frame ${System.nanoTime() - started}ns")
+                if (android.os.Build.VERSION.SDK_INT >= 29) android.os.Trace.endAsyncSection("PureTV.savedVodSelectionToFirstFrame", timingTraceCookie)
+                vodSelectionStartedNanos = 0L
+            }
+        }
+
+        override fun onPositionDiscontinuity(
+            oldPosition: Player.PositionInfo,
+            newPosition: Player.PositionInfo,
+            reason: Int,
+        ) {
+            if (reason == Player.DISCONTINUITY_REASON_SEEK) {
+                if (seekStartedNanos != 0L && android.os.Build.VERSION.SDK_INT >= 29) {
+                    android.os.Trace.endAsyncSection("PureTV.savedVodSeekToRender", timingTraceCookie + 1)
+                }
+                seekStartedNanos = System.nanoTime()
+                if (android.os.Build.VERSION.SDK_INT >= 29) android.os.Trace.beginAsyncSection("PureTV.savedVodSeekToRender", timingTraceCookie + 1)
+            }
+        }
+    }
+    private val playbackAnalyticsListener = object : androidx.media3.exoplayer.video.VideoFrameMetadataListener {
+        override fun onVideoFrameAboutToBeRendered(
+            presentationTimeUs: Long,
+            releaseTimeNs: Long,
+            format: androidx.media3.common.Format,
+            mediaFormat: android.media.MediaFormat?,
+        ) {
+            val started = seekStartedNanos
+            if (started != 0L) {
+                android.util.Log.i("PureTV-Playback", "seek rendered ${System.nanoTime() - started}ns")
+                if (android.os.Build.VERSION.SDK_INT >= 29) android.os.Trace.endAsyncSection("PureTV.savedVodSeekToRender", timingTraceCookie + 1)
+                seekStartedNanos = 0L
+            }
+        }
+    }
+
+    fun beginVodSelectionTiming() {
+        vodSelectionStartedNanos = System.nanoTime()
+        seekStartedNanos = 0L
+        timingTraceCookie = if (timingTraceCookie >= Int.MAX_VALUE - 2) 1 else timingTraceCookie + 2
+        if (android.os.Build.VERSION.SDK_INT >= 29) {
+            android.os.Trace.beginAsyncSection("PureTV.savedVodSelectionToFirstFrame", timingTraceCookie)
+        }
+    }
     private val _subtitleTracks = MutableStateFlow<List<SubtitleTrack>>(emptyList())
     val subtitleTracks: StateFlow<List<SubtitleTrack>> = _subtitleTracks
 
@@ -154,6 +205,8 @@ class TvPlayer(
             playWhenReady = true
             addListener(recoveryListener)
             addListener(subtitleTrackListener)
+            addListener(vodTimingListener)
+            setVideoFrameMetadataListener(playbackAnalyticsListener)
         }
 
     /**
@@ -206,6 +259,7 @@ class TvPlayer(
     /** Play an archive URL and optionally attach a local SRT document. */
     fun playVod(url: String, subtitleUri: Uri? = null, startPositionMs: Long = 0L) {
         errorRetries = 0
+        if (vodSelectionStartedNanos == 0L) beginVodSelectionTiming()
         setQuality(StreamQuality.AUTO)
         exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters.buildUpon()
             .clearOverridesOfType(C.TRACK_TYPE_TEXT)

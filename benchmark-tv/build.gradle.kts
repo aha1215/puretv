@@ -7,7 +7,17 @@ android {
     namespace = "com.puretv.twitch.tv.benchmark"
     compileSdk = 35
     targetProjectPath = ":app-tv"
-    targetVariant = "benchmark"
+    experimentalProperties["android.experimental.self-instrumenting"] = true
+    buildTypes {
+        create("benchmark") {
+            initWith(getByName("debug"))
+            matchingFallbacks += listOf("benchmark")
+        }
+    }
+
+    variantFilter {
+        if (buildType.name == "debug") ignore = true
+    }
 
     defaultConfig {
         minSdk = 26
