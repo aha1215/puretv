@@ -112,6 +112,26 @@ internal fun friendlyLoadError(e: Throwable, fallback: String): String = when {
 }
 
 /**
+ * A user-scoped read that 401s while the app still holds a session means the
+ * stored token is no longer accepted (expired or revoked). This is NOT a
+ * connectivity problem, so it must not be presented as "check your connection"
+ * — the only recovery is to sign in again.
+ *
+ * Why the TV cannot just refresh it away: refresh needs the app's Twitch
+ * `client_secret`, and a fork that does not ship one gets `403 invalid client
+ * secret` (verified against id.twitch.tv; omitting it is `400 missing client
+ * secret`). [com.puretv.twitch.tv.data.TokenRefresher] still tries, so builds
+ * WITH a secret recover transparently, but the fork must fall back to asking
+ * the viewer to sign in rather than showing a dead list.
+ */
+internal fun isAuthFailure(e: Throwable): Boolean =
+    e is HelixApiException && (e.statusCode == 401 || e.statusCode == 403)
+
+/** Actionable copy for [isAuthFailure]; shown instead of a generic load error. */
+internal const val TV_SESSION_EXPIRED_MESSAGE =
+    "Your Twitch session expired. Sign in again to reload."
+
+/**
  * Landing-screen state. Rebuilt (from the one-shot loader the TV app shipped
  * with) to match the phone app's resilience:
  *   • Cached-first paint — last session's streams show instantly from Room,
@@ -467,6 +487,13 @@ data class TvFollowingUiState(
     val live: List<FollowRow> = emptyList(),
     val offline: List<FollowRow> = emptyList(),
     val errored: Boolean = false,
+    /**
+     * The stored session can no longer authenticate (a 401/403 while the app
+     * still considered itself signed in). Kept SEPARATE from [errored] because
+     * the remedy differs: a network error wants "Try again", a dead session
+     * wants "Sign in again" (see [isAuthFailure]).
+     */
+    val sessionExpired: Boolean = false,
 )
 
 /**
@@ -486,6 +513,7 @@ data class TvFollowingUiState(
 class TvFollowingViewModel(
     private val source: FollowedChannelsSource,
     private val settings: AppSettingsStore,
+    private val tokenRefresher: TokenRefresher,
 ) : ViewModel() {
     private val _state = MutableStateFlow(TvFollowingUiState())
     val state: StateFlow<TvFollowingUiState> = _state.asStateFlow()
@@ -512,20 +540,43 @@ class TvFollowingViewModel(
             // Signed out (manually or via token-expiry): drop cached profiles so a
             // different account signing in next within this process never reuses them.
             source.clear()
-            _state.update { it.copy(isLoggedIn = false, isLoading = false, live = emptyList(), offline = emptyList()) }
+            _state.update {
+                it.copy(isLoggedIn = false, isLoading = false, live = emptyList(), offline = emptyList(), sessionExpired = false)
+            }
             return
         }
-        _state.update { it.copy(isLoggedIn = true, isLoading = it.live.isEmpty() && it.offline.isEmpty()) }
-        runCatching {
-            source.load(userId, emptyList()) { partial ->
-                // Fast partial: live channels are in (avatars may still be loading). Drop
-                // the loading state now so the list appears without waiting on avatars.
-                _state.update { it.copy(isLoading = false, errored = false, live = partial.live, offline = partial.offline) }
-            }
+        _state.update {
+            it.copy(isLoggedIn = true, isLoading = it.live.isEmpty() && it.offline.isEmpty(), sessionExpired = false)
         }
-            .onSuccess { full -> _state.update { it.copy(isLoading = false, errored = false, live = full.live, offline = full.offline) } }
-            .onFailure { _state.update { it.copy(isLoading = false, errored = true) } }
+        var result = runCatching { loadRails(userId) }
+        if (result.isFailure && isAuthFailure(result.exceptionOrNull()!!)) {
+            // The stored access token is dead. Try one refresh first (recovers on
+            // builds that ship a client secret), then retry once before deciding.
+            runCatching { tokenRefresher.refreshIfPossible(force = true) }
+            result = runCatching { loadRails(userId) }
+        }
+        result
+            .onSuccess { full ->
+                _state.update { it.copy(isLoading = false, errored = false, sessionExpired = false, live = full.live, offline = full.offline) }
+            }
+            .onFailure { e ->
+                // A dead session is not a network fault: surface a sign-in action
+                // rather than "check your connection", which is wrong (they ARE
+                // signed in) and gives the viewer nothing to do.
+                if (isAuthFailure(e)) {
+                    _state.update { it.copy(isLoading = false, errored = false, sessionExpired = true) }
+                } else {
+                    _state.update { it.copy(isLoading = false, errored = true) }
+                }
+            }
     }
+
+    private suspend fun loadRails(userId: String) =
+        source.load(userId, emptyList()) { partial ->
+            // Fast partial: live channels are in (avatars may still be loading). Drop
+            // the loading state now so the list appears without waiting on avatars.
+            _state.update { it.copy(isLoading = false, errored = false, live = partial.live, offline = partial.offline) }
+        }
 }
 
 data class BrowseUiState(
@@ -617,6 +668,12 @@ data class SearchUiState(
     val query: String = "",
     val results: List<com.puretv.twitch.core.api.ChannelSearchResult> = emptyList(),
     val isSearching: Boolean = false,
+    /**
+     * Why the last search returned nothing, or null when it genuinely matched
+     * nothing. Empty results with no explanation was the "dead no results"
+     * screen: a dead session and a query with no hits looked identical.
+     */
+    val error: String? = null,
 )
 
 class SearchViewModel(private val channelRepository: ChannelRepository) : ViewModel() {
@@ -626,13 +683,23 @@ class SearchViewModel(private val channelRepository: ChannelRepository) : ViewMo
     fun onQueryChange(query: String) {
         _state.update { it.copy(query = query) }
         if (query.length < 2) {
-            _state.update { it.copy(results = emptyList(), isSearching = false) }
+            _state.update { it.copy(results = emptyList(), isSearching = false, error = null) }
             return
         }
         viewModelScope.launch {
-            _state.update { it.copy(isSearching = true) }
-            val results = runCatching { channelRepository.search(query) }.getOrDefault(emptyList())
-            _state.update { it.copy(results = results, isSearching = false) }
+            _state.update { it.copy(isSearching = true, error = null) }
+            runCatching { channelRepository.search(query) }
+                .onSuccess { results ->
+                    _state.update { it.copy(results = results, isSearching = false, error = null) }
+                }
+                .onFailure { e ->
+                    val message = if (isAuthFailure(e)) {
+                        TV_SESSION_EXPIRED_MESSAGE
+                    } else {
+                        "Search failed. Check your connection and try again."
+                    }
+                    _state.update { it.copy(results = emptyList(), isSearching = false, error = message) }
+                }
         }
     }
 }

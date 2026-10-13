@@ -115,6 +115,12 @@ fun TvSearchScreen(
             Text(text = "Searching…", style = MaterialTheme.typography.bodyLarge, color = c.onSurfaceVariant)
         }
 
+        // Without this, an expired session and a query with no matches both
+        // rendered as "nothing" — the dead results screen.
+        state.error?.takeIf { state.results.isEmpty() && !state.isSearching }?.let { message ->
+            Text(text = message, style = MaterialTheme.typography.bodyLarge, color = c.onSurfaceVariant)
+        }
+
         if (state.results.isNotEmpty()) {
             Box(
                 modifier = Modifier

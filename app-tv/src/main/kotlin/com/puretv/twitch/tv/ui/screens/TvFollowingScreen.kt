@@ -112,6 +112,7 @@ fun TvFollowingScreen(
     // actually on screen, while still never yanking focus back within a branch.
     val targetKind = when {
         !state.isLoggedIn -> "signedOut"
+        state.sessionExpired && noData -> "signInAgain"
         state.errored && noData -> "retry"
         !noData -> "content"
         else -> null
@@ -170,6 +171,12 @@ fun TvFollowingScreen(
             when {
                 !state.isLoggedIn -> SignedOutBlock(onSignIn = onOpenLogin, focusRequester = firstFocusRequester)
 
+                // Signed in, but the stored token is no longer accepted. Distinct
+                // from SignedOutBlock (the session exists) and from ErrorBlock
+                // ("Try again" cannot help — only a fresh sign-in can).
+                state.sessionExpired && noData ->
+                    SessionExpiredBlock(onSignIn = onOpenLogin, focusRequester = firstFocusRequester)
+
                 // isLoading is only ever true while there's no data yet (see
                 // TvFollowingViewModel.loadOnce), so this never flashes on a refresh.
                 state.isLoading && noData ->
@@ -225,6 +232,37 @@ private fun SignedOutBlock(onSignIn: () -> Unit, focusRequester: FocusRequester)
             Spacer(Modifier.height(24.dp))
             TvExpressiveButton(
                 text = "Sign in",
+                onClick = onSignIn,
+                style = TvButtonStyle.Filled,
+                size = TvButtonSize.Medium,
+                icon = ExpressiveIcons.SignIn,
+                modifier = Modifier.focusRequester(focusRequester),
+            )
+        }
+    }
+}
+
+/**
+ * Signed in on paper, but the stored token is dead. The remedy is a fresh
+ * sign-in, so this offers exactly that instead of an unhelpful "Try again"
+ * (see [com.puretv.twitch.tv.ui.isAuthFailure] for why the TV cannot simply
+ * refresh it away).
+ */
+@Composable
+private fun SessionExpiredBlock(onSignIn: () -> Unit, focusRequester: FocusRequester) {
+    val c = PureTvTvTheme.colors
+    TvPanel {
+        Column {
+            Text("Your Twitch session expired", style = MaterialTheme.typography.titleLarge, color = c.onSurface)
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Sign in again to reload the channels you follow.",
+                style = MaterialTheme.typography.bodyLarge,
+                color = c.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(24.dp))
+            TvExpressiveButton(
+                text = "Sign in again",
                 onClick = onSignIn,
                 style = TvButtonStyle.Filled,
                 size = TvButtonSize.Medium,

@@ -2,6 +2,7 @@ package com.puretv.twitch.tv.data
 
 import com.puretv.twitch.core.api.DeviceAuth
 import com.puretv.twitch.core.repository.UserRepository
+import android.util.Log
 import io.ktor.client.HttpClient
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Mutex
@@ -58,7 +59,12 @@ class TokenRefresher(
                     )
                     lastSuccessfulRefreshAtMs = System.currentTimeMillis()
                 }
-            // Deliberately no onFailure: keep the current session on any failure.
+            // Deliberately no logout on failure: keep the current session. But DO
+            // log it — swallowing this silently is what let a dead session keep
+            // looking "signed in" while every user-scoped read 401'd. A
+            // TokenRefreshException here is a rejection (e.g. "invalid client
+            // secret" when no secret is configured), not a blip.
+            .onFailure { e -> Log.w(TAG, "Access-token refresh failed; keeping the current session", e) }
         }
         backfillIdentityIfMissing()
     }
@@ -82,6 +88,7 @@ class TokenRefresher(
     }
 
     private companion object {
+        const val TAG = "TokenRefresher"
         // A successful refresh within this window short-circuits a redundant one,
         // so a flurry of resume/retry calls coalesces onto a single token round.
         const val MIN_REFRESH_INTERVAL_MS = 60_000L

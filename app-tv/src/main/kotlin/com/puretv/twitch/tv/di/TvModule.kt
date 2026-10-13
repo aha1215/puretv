@@ -88,9 +88,10 @@ val tvModule = module {
     // the last two power cached-first paint/write-through + the on-failure token
     // refresh so "Live Now" survives token expiry and repopulates on refresh.
     viewModel { HomeViewModel(get(), get(), get(), get(), get(), get()) }
-    // TvFollowingViewModel(followedChannelsSource, settings): the Following
-    // destination's own nav-rail screen, see TvFollowingScreen.
-    viewModel { TvFollowingViewModel(get(), get()) }
+    // TvFollowingViewModel(followedChannelsSource, settings, tokenRefresher): the
+    // Following destination's own nav-rail screen, see TvFollowingScreen. The
+    // refresher is tried once on a 401 before the screen offers a re-sign-in.
+    viewModel { TvFollowingViewModel(get(), get(), get()) }
     // BrowseViewModel(channelRepo, tokenRefresher): tokenRefresher recovers the
     // expired-token 401 that used to blank the category grid.
     viewModel { BrowseViewModel(get(), get()) }
