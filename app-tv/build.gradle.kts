@@ -63,10 +63,14 @@ android {
             dimension = "distribution"
             applicationId = "com.puretv.twitch.tv"
             buildConfigField("boolean", "AD_STRIPPING_ENABLED", "true")
+            // The fork's OWN releases. Pointing at upstream's `tv-latest` offered an
+            // APK signed with upstream's key, which this fork cannot install over —
+            // so the check must target our own repo. Until a fork release exists this
+            // 404s, which the updater treats as "nothing to offer" (quiet, no nag).
             buildConfigField(
                 "String",
                 "UPDATE_MANIFEST_URL",
-                "\"https://github.com/dhawal-ss/puretv/releases/download/tv-latest/tv-version.json\"",
+                "\"https://github.com/aha1215/puretv/releases/download/tv-latest/tv-version.json\"",
             )
         }
         create("play") {

@@ -37,8 +37,9 @@ import java.util.concurrent.atomic.AtomicBoolean
  * couch with the remote (the one-time "install unknown apps" consent aside).
  *
  * Version discovery uses a tiny JSON manifest published next to the APK on the
- * moving `tv-latest` release (see [VERSION_MANIFEST_URL]) rather than the GitHub
- * API: it's a stable URL, dodges the API's unauthenticated rate limit, and lets
+ * moving `tv-latest` release (see `BuildConfig.UPDATE_MANIFEST_URL`, set per
+ * flavor) rather than the GitHub API: it's a stable URL, dodges the API's
+ * unauthenticated rate limit, and lets
  * us compare `versionCode` (monotonic) instead of parsing a tag. Networking is a
  * plain OkHttp client (NOT the shared Twitch client, whose `Client-Id`/`Bearer`
  * headers GitHub would reject).
