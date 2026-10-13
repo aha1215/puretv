@@ -1,0 +1,79 @@
+﻿# Cold-start A/B - pre-sweep e716aa6 vs current HEAD (app-tv full)
+# Device: onn. Streaming Device 4K Pro (192.168.0.110:5555), Android 14 / API 34
+# Harness: TvExperienceBenchmark#coldStartup; StartupTimingMetric + MemoryUsageMetric(Max);
+#          StartupMode.COLD; CompilationMode.None(); 5 iterations per run.
+# Exclusive device (no other agent instrumenting); all runs PASS, CONTENDED=false.
+# Delta is within run-to-run stddev: the sweep did not change cold start.
+
+## run baseline-1  (OK (1 test)=True)
+INSTRUMENTATION_STATUS: memory_heap_size_max_kb_max=18878.0
+INSTRUMENTATION_STATUS: memory_heap_size_max_kb_median=15610.0
+INSTRUMENTATION_STATUS: memory_heap_size_max_kb_min=14904.0
+INSTRUMENTATION_STATUS: memory_heap_size_max_kb_stddev=1547.8983170738315
+INSTRUMENTATION_STATUS: memory_rss_anon_max_kb_max=63440.0
+INSTRUMENTATION_STATUS: memory_rss_anon_max_kb_median=62340.0
+INSTRUMENTATION_STATUS: memory_rss_anon_max_kb_min=61292.0
+INSTRUMENTATION_STATUS: memory_rss_anon_max_kb_stddev=885.1323064943455
+INSTRUMENTATION_STATUS: memory_rss_file_max_kb_max=126824.0
+INSTRUMENTATION_STATUS: memory_rss_file_max_kb_median=123348.0
+INSTRUMENTATION_STATUS: memory_rss_file_max_kb_min=122084.0
+INSTRUMENTATION_STATUS: memory_rss_file_max_kb_stddev=1920.8269052676246
+INSTRUMENTATION_STATUS: time_to_initial_display_millis_max=2323.21096
+INSTRUMENTATION_STATUS: time_to_initial_display_millis_median=2015.101209
+INSTRUMENTATION_STATUS: time_to_initial_display_millis_min=1991.404418
+INSTRUMENTATION_STATUS: time_to_initial_display_millis_stddev=142.6930011964583
+
+## run baseline-2  (OK (1 test)=True)
+INSTRUMENTATION_STATUS: memory_heap_size_max_kb_max=18735.0
+INSTRUMENTATION_STATUS: memory_heap_size_max_kb_median=16010.0
+INSTRUMENTATION_STATUS: memory_heap_size_max_kb_min=15102.0
+INSTRUMENTATION_STATUS: memory_heap_size_max_kb_stddev=1475.3603966489002
+INSTRUMENTATION_STATUS: memory_rss_anon_max_kb_max=63428.0
+INSTRUMENTATION_STATUS: memory_rss_anon_max_kb_median=62060.0
+INSTRUMENTATION_STATUS: memory_rss_anon_max_kb_min=60928.0
+INSTRUMENTATION_STATUS: memory_rss_anon_max_kb_stddev=1069.9084072947553
+INSTRUMENTATION_STATUS: memory_rss_file_max_kb_max=127984.0
+INSTRUMENTATION_STATUS: memory_rss_file_max_kb_median=122812.0
+INSTRUMENTATION_STATUS: memory_rss_file_max_kb_min=120140.0
+INSTRUMENTATION_STATUS: memory_rss_file_max_kb_stddev=3151.1762883088595
+INSTRUMENTATION_STATUS: time_to_initial_display_millis_max=2280.418959
+INSTRUMENTATION_STATUS: time_to_initial_display_millis_median=2034.500085
+INSTRUMENTATION_STATUS: time_to_initial_display_millis_min=2019.05446
+INSTRUMENTATION_STATUS: time_to_initial_display_millis_stddev=110.7451454491622
+
+## run head-1  (OK (1 test)=True)
+INSTRUMENTATION_STATUS: memory_heap_size_max_kb_max=18334.0
+INSTRUMENTATION_STATUS: memory_heap_size_max_kb_median=15545.0
+INSTRUMENTATION_STATUS: memory_heap_size_max_kb_min=14567.0
+INSTRUMENTATION_STATUS: memory_heap_size_max_kb_stddev=1420.1470698487535
+INSTRUMENTATION_STATUS: memory_rss_anon_max_kb_max=62384.0
+INSTRUMENTATION_STATUS: memory_rss_anon_max_kb_median=61860.0
+INSTRUMENTATION_STATUS: memory_rss_anon_max_kb_min=60528.0
+INSTRUMENTATION_STATUS: memory_rss_anon_max_kb_stddev=777.8143737422188
+INSTRUMENTATION_STATUS: memory_rss_file_max_kb_max=128256.0
+INSTRUMENTATION_STATUS: memory_rss_file_max_kb_median=121948.0
+INSTRUMENTATION_STATUS: memory_rss_file_max_kb_min=120240.0
+INSTRUMENTATION_STATUS: memory_rss_file_max_kb_stddev=3298.0047301360864
+INSTRUMENTATION_STATUS: time_to_initial_display_millis_max=2213.380543
+INSTRUMENTATION_STATUS: time_to_initial_display_millis_median=2033.926751
+INSTRUMENTATION_STATUS: time_to_initial_display_millis_min=2010.215501
+INSTRUMENTATION_STATUS: time_to_initial_display_millis_stddev=83.93841256838016
+
+## run head-2  (OK (1 test)=True)
+INSTRUMENTATION_STATUS: memory_heap_size_max_kb_max=18153.0
+INSTRUMENTATION_STATUS: memory_heap_size_max_kb_median=15897.0
+INSTRUMENTATION_STATUS: memory_heap_size_max_kb_min=13990.0
+INSTRUMENTATION_STATUS: memory_heap_size_max_kb_stddev=1506.3021609225686
+INSTRUMENTATION_STATUS: memory_rss_anon_max_kb_max=62848.0
+INSTRUMENTATION_STATUS: memory_rss_anon_max_kb_median=62084.0
+INSTRUMENTATION_STATUS: memory_rss_anon_max_kb_min=60300.0
+INSTRUMENTATION_STATUS: memory_rss_anon_max_kb_stddev=947.1532083037041
+INSTRUMENTATION_STATUS: memory_rss_file_max_kb_max=127680.0
+INSTRUMENTATION_STATUS: memory_rss_file_max_kb_median=121884.0
+INSTRUMENTATION_STATUS: memory_rss_file_max_kb_min=120764.0
+INSTRUMENTATION_STATUS: memory_rss_file_max_kb_stddev=2856.303345234886
+INSTRUMENTATION_STATUS: time_to_initial_display_millis_max=2418.147043
+INSTRUMENTATION_STATUS: time_to_initial_display_millis_median=2066.335876
+INSTRUMENTATION_STATUS: time_to_initial_display_millis_min=2006.829001
+INSTRUMENTATION_STATUS: time_to_initial_display_millis_stddev=168.65404547262514
+

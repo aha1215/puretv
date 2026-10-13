@@ -80,13 +80,13 @@ The built APK is signed with **the fork's own key** (`puretv-local-release.jks`)
 | saved VODs (offline) | already fine | `full-09` |
 | Home browse while signed in | already fine | `full-01`; `play-07` after sign-in |
 | Following — fresh sign-in | already fine | real live follows list (`play-08`) |
-| Following — existing `full` install | **deferred** | `full-08` "Couldn't load your follows"; see §6 |
+| Following — existing `full` install | **improved** | root cause found (§6b); now surfaces "Your Twitch session expired · Sign in again" instead of a dead list (`full-13`) |
 | Search — fresh sign-in | already fine | query returns results (`play-09`) |
-| Search — existing `full` install | **deferred** | `full-11` returns no results; see §6 |
+| Search — existing `full` install | **improved** | actionable message instead of silently-empty results (`full-14`) |
 | Login (device code + QR) | already fine | `play-05` shows code + `twitch.tv/activate`; sign-in completed on device → `play-07` |
 | signed-out browse | **deferred** | Twitch Helix 401s anonymous reads; `play-04`, `play-06`; see §6 |
 | cold start | measured | §7 |
-| self-updater | **deferred** | flavor-aware manifest; cannot exercise end-to-end; see §8 |
+| self-updater | **improved** | both flavors now point at the fork's own repo; an absent manifest fails quietly (`full-15`); exercising it end-to-end needs a published fork release (§8a) |
 | no-telemetry promise | already fine | no analytics/crash SDK in any `*.kts`; `core` untouched |
 
 D-pad behaviour checked on every screen above: each dump shows a focused, focusable element and a
@@ -109,12 +109,13 @@ All files in `docs/tv-audit/evidence/`. PNGs are byte-exact (`adb exec-out`-safe
 | Settings ▸ Chat | `full-03b-settings-chat.png` | — |
 | Categories | `full-06-categories.png/.xml` | `play-03-categories.png/.xml` |
 | Search (empty) | `full-07-search.png/.xml` | `play-06-search.png/.xml` |
-| Search (results) | `full-11-search-results.png/.xml` (empty results) | `play-09-search-results.png/.xml` |
-| Following | `full-08-following.png/.xml` (error) | `play-04-following.png/.xml` (signed out), `play-08-following-signedin.png/.xml` |
+| Search (results) | `full-14-search-session-expired.png/.xml` (expired session), `full-11-search-results.png/.xml` (empty) | `play-09-search-results.png/.xml` |
+| Following | `full-13-following-session-expired.png/.xml` (expired session), `full-08-following.png/.xml` (pre-fix error) | `play-04-following.png/.xml` (signed out), `play-08-following-signedin.png/.xml` |
 | Downloads / SMB / saved VODs | `full-09-downloads.png/.xml` | — |
 | Live stream | `full-04-stream-live.png/.xml`, `full-05-stream-controls.png/.xml` | — |
 | Login (device code + QR) | — | `play-05-login.png/.xml` |
-| Cold-start benchmark (raw) | `full-12-coldstart-benchmark.txt` | — |
+| Settings ▸ Account & Updates (update check) | `full-15-settings-update-check.png/.xml` | — |
+| Cold-start A/B (raw) | `full-16-coldstart-ab.txt` | — |
 
 The player screenshots (`full-04`, `full-05`) carry the player evidence: the ExoPlayer surface and
 its Compose overlay expose **no** accessibility text, so their XML dumps are structurally empty by
@@ -146,54 +147,99 @@ On `play` (fresh, signed out) this is visible on Home (`play-01`), Following (`p
 
 Landed mitigation this sweep: the TV app no longer leaks the raw exception or blames the connection
 — a 401 is mapped to an actionable message ("Twitch now requires sign-in to browse. Choose Sign in
-from the nav rail.") on Home, Following and Category (`ViewModels.friendlyLoadError`), confirmed on
-`play-01`.
+from the nav rail.") on Home and Browse (the category grid) via `ViewModels.friendlyLoadError`; the
+signed-out Home is captured in `play-01`. The signed-out Following/Search screens are covered by the
+same auth-vs-network distinction described in §6b.
 
-### 6b. User-scoped reads fail on the long-lived `full` install
+### 6b. User-scoped reads fail on the long-lived `full` install — root cause found, made actionable
 
-On the `full` install already on this TV, **Following** shows "Couldn't load your follows"
-(`full-08`) and **Search** returns no results (`full-11`), while the app does **not** show the
-`Sign in` rail item — i.e. it believes it is signed in. The app's own log while loading says:
+**Symptom.** On the `full` install already on this TV, **Following** showed "Couldn't load your
+follows" (`full-08`) and **Search** returned nothing (`full-11`), while the app showed no `Sign in`
+rail item — it believed it was signed in.
 
-```
-TvHomeViewModel: Twitch private resume history is unavailable; retaining local VOD checkpoints.
-```
+**Root cause (established).** The stored access token had expired and the refresh could never
+succeed, and the failure was swallowed:
 
-The same account freshly signed in on `play` works for both (`play-08`, `play-09`). Conclusion: the
-stored credential on that specific older install no longer authorizes user-scoped reads. This is
-**not** a regression from the flavor split (no auth/networking code changed) and the root cause of
-the stale credential was **not established** in this sweep; it is recorded honestly rather than
-declared fine. Freshly reinstalling/signing in `full` is the expected recovery.
+1. The app's own log while refreshing:
+   `W TokenRefresher: com.puretv.twitch.core.api.TokenRefreshException: invalid client secret`.
+2. Reproduced against `id.twitch.tv/oauth2/token` from the host with this app's client id:
+
+   | request | response |
+   |---|---|
+   | `client_secret=PASTE_YOUR_CLIENT_SECRET_HERE` | `403 {"message":"invalid client secret"}` |
+   | no `client_secret` / empty | `400 {"message":"missing client secret"}` |
+
+   So this Twitch client **requires** a client secret for refresh, and the fork builds with the
+   placeholder ([`TwitchSecrets`] is generated from a gitignored `secrets.properties` / `TWITCH_CLIENT_SECRET`
+   that this checkout does not have). Refresh therefore fails **every** time.
+3. `TokenRefresher.refreshIfPossible` did `runCatching { … }.onSuccess { … }` with **no `onFailure`**,
+   so a definitive rejection was indistinguishable from success to every caller: the dead token
+   stayed, the app stayed "signed in", and every user-scoped read 401'd.
+
+The device-flow **sign-in** path sends no secret, which is why signing in fresh works and why the
+fresh session on `play` was fine (`play-08`) — until its ~4 h access token expires and hits the same
+wall.
+
+**Fix landed (app-tv only).**
+
+- `TokenRefresher` now **logs** the failure instead of swallowing it silently (this is what made the
+  cause visible above).
+- A new `isAuthFailure()` (401/403 from Helix) plus `TV_SESSION_EXPIRED_MESSAGE` drive an actionable
+  state: **Following** tries one forced refresh first (so a build that *does* ship a secret recovers
+  transparently) and then shows "Your Twitch session expired · Sign in again" (`full-13`); **Search**
+  shows "Your Twitch session expired. Sign in again to reload." instead of an empty screen
+  (`full-14`). A network error still shows the retryable "Check your connection" copy.
+
+Verified on device: `full` shows both new states (`full-13`, `full-14`), and a fresh sign-in still
+works — `play`'s Following/Search are unchanged and successful (`play-08`, `play-09`).
+
+**Residual (a credential, not code).** Without a real Twitch client secret the fork cannot refresh at
+all, so the recovery is a re-sign-in roughly every 4 h. Restoring automatic refresh needs a secret
+(`secrets.properties` `twitch.client.secret=…` or `TWITCH_CLIENT_SECRET`); that is a credential this
+sweep does not have and must not fabricate.
 
 ## 7. Performance — cold start
 
-Measured with the existing `benchmark-tv` harness
-(`scripts/benchmark-tv-smb.ps1 -Methods coldStartup` → `TvExperienceBenchmark#coldStartup`,
-`StartupTimingMetric` + `MemoryUsageMetric(Max)`, `StartupMode.COLD`, `CompilationMode.None`,
-5 iterations), against the final build. Raw output: `full-12-coldstart-benchmark.txt`.
+The sweep was reported as a cold-start regression (2012.7 ms vs a recorded **1190 ms** median). The
+defensible finding: **it is not a regression from this sweep, and the 1190 ms reference is not
+reproducible.**
 
-| Metric | min | **median** | max | stddev |
-|---|---|---|---|---|
-| `timeToInitialDisplayMs` | 1985.8 | **2012.7** | 2277.6 | 123.8 |
-| `memoryHeapSizeMaxKb` | 15102 | 15706 | 19389 | 1768 |
-| `memoryRssAnonMaxKb` | 60964 | 61828 | 65856 | 1935 |
-| `memoryRssFileMaxKb` | 119972 | 120708 | 130488 | 4450 |
+### A/B — pre-sweep `e716aa6` vs current HEAD
 
-**Cold start: 2012.7 ms median**, versus the recorded **1190 ms** median this sweep is compared
-against (≈ +69%). Two caveats, both material:
+Same device, exclusive access, same harness and configuration (`TvExperienceBenchmark#coldStartup`,
+`StartupTimingMetric` + `MemoryUsageMetric(Max)`, `StartupMode.COLD`, `CompilationMode.None()`,
+5 iterations per run). Raw output: `full-16-coldstart-ab.txt`.
 
-- `CompilationMode.None()` deliberately does **no** AOT/profiling run, so this is the un-warmed
-  launch path; the 1190 ms baseline's measurement conditions are not recorded anywhere in-repo
-  beyond the number itself.
-- Run-to-run variance on this firmware is large: an earlier identical 5-iteration run this sweep
-  reported 2117.4 ms median / 99.8 MB RSS-anon, this one 2012.7 ms / 61.8 MB. The device is
-  thermally and co-tenancy noisy, so treat these as one sample of a wide distribution.
+| build | run | **median ms** | stddev | min | max |
+|---|---|---|---|---|---|
+| `e716aa6` (pre-sweep) | 1 | **2015.1** | 142.7 | 1991.4 | 2323.2 |
+| `e716aa6` (pre-sweep) | 2 | **2034.5** | 110.7 | 2019.1 | 2280.4 |
+| HEAD | 1 | **2033.9** | 83.9 | 2010.2 | 2213.4 |
+| HEAD | 2 | **2066.3** | 168.7 | 2006.8 | 2418.1 |
 
-Methodology note: the first attempts looked like "the harness crashes after 3 iterations". That was
-**not** the firmware — a second, supposedly-cancelled OpenChamber goal session was running the same
-`am instrument` against the same package, so each session's run killed the other's runner
-(`ActivityManager: Crash of app … running instrumentation`). With one session on the device, the run
-completes cleanly (`OK (1 test)`).
+The medians overlap (pre-sweep 2015–2035 ms, HEAD 2034–2066 ms); the difference is ~1–2%, smaller
+than the run-to-run stddev. **The flavor split did not change cold start.** Memory is flat too
+(RSS-anon median ≈ 61.8 MB pre-sweep, ≈ 61.9–62.1 MB HEAD).
+
+### The 1190 ms reference
+
+**Unreproducible.** Its measurement conditions are not recorded anywhere in the repo beyond the
+number itself, and both A/B arms — including the exact pre-sweep commit — land near 2.0 s under
+`CompilationMode.None()`. Comparing a differently-conditioned historical number to this and calling
+it "fixed" or "a regression" would not be defensible, so no such claim is made. What can be said
+plainly: on this device, un-warmed, cold start is ≈ 2.0 s for both the pre-sweep and current builds.
+If the absolute figure is worth attacking, the lever already on the classpath is profile-guided
+startup (`androidx.profileinstaller:profileinstaller:1.4.1` is a dependency) — but that needs its
+own before/after measurement, not an assumption.
+
+### Device exclusivity (methodology)
+
+Earlier cold-start attempts looked like "the harness crashes after 3 iterations". That was **not**
+the firmware: a second OpenChamber goal session was running the same `am instrument` against the
+same package, so each session's run killed the other's runner
+(`ActivityManager: Crash of app … running instrumentation`). With one agent on the device the run
+completes cleanly (`OK (1 test)`). Every A/B run above was taken under exclusive device access and
+checked uncontended (`CONTENDED=false`); a contended run is discarded, never reported.
 
 ### Explicitly unmeasured (FrameTimeline)
 
@@ -207,21 +253,25 @@ reported** — left explicitly unmeasured rather than estimated.
 These need a product or cross-platform decision this sweep cannot take; recorded rather than silently
 passed.
 
-**(a) `full` self-updater still points at upstream's `tv-latest`.**
-`BuildConfig.UPDATE_MANIFEST_URL` for `full` is
-`https://github.com/dhawal-ss/puretv/releases/download/tv-latest/tv-version.json` — upstream's
-release, signed with upstream's key, which this fork's build cannot install over (§3). `play` points
-at a `tv-play-latest` manifest that does not exist yet. Exercising the updater end-to-end therefore
-requires a fork-published release, which this sweep must not create (no publishing). Options, needing
-a decision: (1) point `full` at the fork's own releases once one is published; (2) disable the
-in-app updater for `full` and rely on manual sideload; (3) leave as-is. Pre-existing behaviour; left
-unchanged.
+**(a) Self-updater manifest URLs — repointed at the fork (fixed; still needs a release to exercise).**
+Both flavors now read `BuildConfig.UPDATE_MANIFEST_URL` from the fork's own repo (`aha1215/puretv`):
+`full` → `tv-latest/tv-version.json`, `play` → `tv-play-latest/tv-play-version.json`. Previously
+`full` pointed at upstream's `dhawal-ss/puretv`, which serves an APK signed with a key this fork
+cannot install over (§3) — the configuration was self-inconsistent. The fork currently has **no
+releases**, so the URL 404s; `fetchLatest` treats any non-2xx (and any network failure) as "nothing
+to offer", so the updater stays silent on launch and neither crashes nor nags when the manifest is
+absent. Verified on device against the live 404: the app stays up (`full-15`). One honesty note: the
+*best-effort pressed* check reports "You're on the latest version." in that case (the forced path
+reads "no manifest" as "nothing newer"); it is quiet, but it is not literally "verified latest".
+
+Exercising the updater **end to end** (real download + install) still requires a published fork
+release, which this sweep must not create. That is the one open item here.
 
 **(b) GQL migration for public reads** (see §6a) is a `core` change shared by three platforms and
 needs cross-platform validation; deferred.
 
-**(c) Evidence size.** `docs/tv-audit/evidence/` is ~6.6 MB of PNGs (22 files) plus ~0.3 MB of XML.
-The PNGs are kept because the goal requires per-screen screenshots alongside the dumps and they are
-the primary human-verifiable artefact; XML dumps alone do not show focus/visual state. A 6.6 MB
-checked-in evidence set is acceptable for a one-off audit. If that is unwanted, the PNGs are the part
-to drop.
+**(c) Evidence size.** `docs/tv-audit/evidence/` is ~6.8 MB of PNGs (25 files) plus ~0.3 MB of XML
+(24 files) and one raw benchmark text file. The PNGs are kept because the goal requires per-screen
+screenshots alongside the dumps and they are the primary human-verifiable artefact; XML dumps alone
+do not show focus/visual state. A ~7 MB checked-in evidence set is acceptable for a one-off audit.
+If that is unwanted, the PNGs are the part to drop.
